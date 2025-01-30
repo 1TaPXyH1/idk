@@ -48,10 +48,8 @@ class ClaimTicket(commands.Cog):
             color=discord.Color.blurple()
         )
         view = ClaimButtonView(self.db, thread.id)
-        # Send the message in the parent channel of the thread
-        parent_channel = thread.guild.get_channel_or_thread(thread.parent_id)
-        if parent_channel:
-            await parent_channel.send(embed=embed, view=view)
+        # Send the message directly within the thread
+        await thread.send(embed=embed, view=view)
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
     @commands.command()
