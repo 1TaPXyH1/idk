@@ -4,6 +4,8 @@
 
 import discord
 from discord.ext import commands
+import traceback
+from datetime import datetime
 
 from core import checks
 from core.models import PermissionLevel
@@ -20,6 +22,116 @@ class ClaimThread(commands.Cog):
         self.bot.get_command('areply').add_check(check_reply)
         self.bot.get_command('fareply').add_check(check_reply)
         self.bot.get_command('freply').add_check(check_reply)
+        self.log_channel_id = None
+
+    # Button class for the claim functionality
+    class ClaimButton(ui.Button):
+        def __init__(self):
+            super().__init__(
+                label="Claim Ticket",
+                style=discord.ButtonStyle.primary,
+                custom_id="claim_ticket"
+            )
+
+        async def callback(self, interaction: discord.Interaction):
+            # Get the cog instance
+            cog = interaction.client.get_cog("ClaimThread")
+            
+            # Check if user has supporter permissions
+            if not await commands.has_permissions(PermissionLevel.SUPPORTER).predicate(interaction):
+                return await interaction.response.send_message(
+                    "You don't have permission to claim tickets.", 
+                    ephemeral=True
+                )
+            
+            # Check claim limit
+            if not await cog.check_claimer(interaction, interaction.user.id):
+                return await interaction.response.send_message(
+                    "Limit reached, can't claim the thread.", 
+                    ephemeral=True
+                )
+
+            # Get thread info from database
+            thread = await cog.db.find_one({
+                'thread_id': str(interaction.channel.id),
+                'guild': str(interaction.guild.id)
+            })
+
+            # Check if thread is already claimed
+            if thread and thread.get('claimers', []):
+                return await interaction.response.send_message(
+                    "This ticket is already claimed.", 
+                    ephemeral=True
+                )
+
+            # Claim the thread
+            if not thread:
+                await cog.db.insert_one({
+                    'thread_id': str(interaction.channel.id),
+                    'guild': str(interaction.guild.id),
+                    'claimers': [str(interaction.user.id)]
+                })
+            else:
+                await cog.db.find_one_and_update(
+                    {
+                        'thread_id': str(interaction.channel.id), 
+                        'guild': str(interaction.guild.id)
+                    },
+                    {'$addToSet': {'claimers': str(interaction.user.id)}}
+                )
+
+            # Update button state
+            self.disabled = True
+            self.label = f"Claimed by {interaction.user.display_name}"
+            self.style = discord.ButtonStyle.secondary
+            
+            # Update the message with the new button state
+            await interaction.message.edit(view=self.view)
+
+            # Send confirmation message
+            await interaction.response.send_message(
+                f"Ticket claimed by {interaction.user.mention}", 
+                ephemeral=True
+            )
+
+            # Send notification to recipient
+            try:
+                recipient_id = match_user_id(interaction.channel.topic)
+                if recipient_id:
+                    recipient = interaction.client.get_user(recipient_id) or await interaction.client.fetch_user(recipient_id)
+                    embed = discord.Embed(
+                        color=interaction.client.main_color,
+                        title="Ticket Claimed",
+                        description="Please wait as the assigned support agent reviews your case, you will receive a response shortly.",
+                        timestamp=discord.utils.utcnow(),
+                    )
+                    embed.set_footer(
+                        text=f"{interaction.user.name}#{interaction.user.discriminator}", 
+                        icon_url=interaction.user.display_avatar.url
+                    )
+                    await recipient.send(embed=embed)
+            except:
+                pass
+
+    # View class to hold the button
+    class ClaimView(ui.View):
+        def __init__(self):
+            super().__init__(timeout=None)
+            self.add_item(ClaimThread.ClaimButton())
+
+    @commands.Cog.listener()
+    async def on_thread_create(self, thread):
+        """Send claim button when a new thread is created"""
+        if not await self.check_before_update(thread):
+            return
+
+        embed = discord.Embed(
+            title="Ticket Controls",
+            description="Click the button below to claim this ticket.",
+            color=self.bot.main_color
+        )
+        
+        await thread.send(embed=embed, view=self.ClaimView())
 
     async def check_claimer(self, ctx, claimer_id):
         config = await self.db.find_one({'_id': 'config'})
@@ -48,61 +160,146 @@ class ClaimThread(commands.Cog):
         if await self.check_before_update(channel):
             await self.db.delete_one({'thread_id': str(channel.id), 'guild': str(self.bot.modmail_guild.id)})
 
+    async def log_action(self, ctx, action: str, target=None, error=None):
+        """Log claim actions to designated channel"""
+        try:
+            if not self.log_channel_id:
+                return
+                
+            log_channel = self.bot.get_channel(self.log_channel_id)
+            if not log_channel:
+                return
+
+            embed = discord.Embed(
+                title="Claim Action Log",
+                color=discord.Color.blue() if not error else discord.Color.red(),
+                timestamp=datetime.utcnow()
+            )
+            
+            embed.add_field(
+                name="Action", 
+                value=action, 
+                inline=False
+            )
+            embed.add_field(
+                name="Thread", 
+                value=ctx.channel.mention, 
+                inline=True
+            )
+            embed.add_field(
+                name="User", 
+                value=ctx.author.mention, 
+                inline=True
+            )
+            
+            if target:
+                embed.add_field(
+                    name="Target", 
+                    value=target.mention, 
+                    inline=True
+                )
+            
+            if error:
+                embed.add_field(
+                    name="Error", 
+                    value=f"```{str(error)}```", 
+                    inline=False
+                )
+                
+            embed.set_footer(text=f"Thread ID: {ctx.channel.id}")
+            await log_channel.send(embed=embed)
+            
+        except Exception as e:
+            print(f"Logging error: {str(e)}")
+
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @checks.thread_only()
     @commands.group(name='claim', invoke_without_command=True)
     async def claim_(self, ctx, subscribe: bool = True):
         """Claim a thread"""
-        if not ctx.invoked_subcommand:
-            if not await self.check_claimer(ctx, ctx.author.id):
-                return await ctx.reply(f"Limit reached, can't claim the thread.")
+        try:
+            if not ctx.invoked_subcommand:
+                if not await self.check_claimer(ctx, ctx.author.id):
+                    await self.log_action(ctx, "Claim Attempt Failed", error="Limit reached")
+                    return await ctx.reply(f"Limit reached, can't claim the thread.")
 
-            thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
-            recipient_id = match_user_id(ctx.thread.channel.topic)
-            recipient = self.bot.get_user(recipient_id) or await self.bot.fetch_user(recipient_id)
+                thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
+                recipient_id = match_user_id(ctx.thread.channel.topic)
+                recipient = self.bot.get_user(recipient_id) or await self.bot.fetch_user(recipient_id)
 
-            embed = discord.Embed(
-                color=self.bot.main_color,
-                title="Ticket Claimed",
-                description="Please wait as the assigned support agent reviews your case, you will receive a response shortly.",
-                timestamp=ctx.message.created_at,
-            )
-            embed.set_footer(
-                text=f"{ctx.author.name}#{ctx.author.discriminator}", icon_url=ctx.author.display_avatar.url)
+                # Create the claim embed
+                embed = discord.Embed(
+                    color=self.bot.main_color,
+                    title="Ticket Claimed",
+                    description="Please wait as the assigned support agent reviews your case, you will receive a response shortly.",
+                    timestamp=ctx.message.created_at,
+                )
+                embed.set_footer(
+                    text=f"{ctx.author.name}#{ctx.author.discriminator}", 
+                    icon_url=ctx.author.display_avatar.url
+                )
 
-            description = ""
-            if subscribe:
-                if str(ctx.thread.id) not in self.bot.config["subscriptions"]:
-                    self.bot.config["subscriptions"][str(ctx.thread.id)] = []
+                description = ""
+                
+                # Handle subscription
+                if subscribe:
+                    if str(ctx.thread.id) not in self.bot.config["subscriptions"]:
+                        self.bot.config["subscriptions"][str(ctx.thread.id)] = []
 
-                mentions = self.bot.config["subscriptions"][str(ctx.thread.id)]
+                    mentions = self.bot.config["subscriptions"][str(ctx.thread.id)]
 
-                if ctx.author.mention in mentions:
-                    mentions.remove(ctx.author.mention)
-                    description += f"{ctx.author.mention} will __not__ be notified of any message now.\n"
+                    if ctx.author.mention in mentions:
+                        mentions.remove(ctx.author.mention)
+                        description += f"{ctx.author.mention} will __not__ be notified of any message now.\n"
+                    else:
+                        mentions.append(ctx.author.mention)
+                        description += f"{ctx.author.mention} will now be notified of all messages received.\n"
+                    await self.bot.config.update()
+
+                # Handle claiming
+                if thread is None or len(thread.get('claimers', [])) == 0:
+                    # Update database
+                    if thread is None:
+                        await self.db.insert_one({
+                            'thread_id': str(ctx.thread.channel.id), 
+                            'guild': str(self.bot.modmail_guild.id), 
+                            'claimers': [str(ctx.author.id)]
+                        })
+                    else:
+                        await self.db.find_one_and_update(
+                            {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)}, 
+                            {'$addToSet': {'claimers': str(ctx.author.id)}}
+                        )
+                    
+                    # Rename channel
+                    try:
+                        new_name = f"{ctx.channel.name}-claimed-by-{ctx.author.name}"
+                        await ctx.channel.edit(name=new_name)
+                    except discord.Forbidden:
+                        description += "\nCouldn't rename channel - missing permissions."
+                    except Exception as e:
+                        description += f"\nError renaming channel: {str(e)}"
+                    
+                    # Send notifications
+                    async with ctx.typing():
+                        await recipient.send(embed=embed)
+                    description += "Please respond to the case asap."
+                    embed.description = description
+                    await ctx.reply(embed=embed)
+                    
+                    # Log the successful claim
+                    await self.log_action(ctx, "Ticket Claimed")
+                    
                 else:
-                    mentions.append(ctx.author.mention)
-                    description += f"{ctx.author.mention} will now be notified of all messages received.\n"
-                await self.bot.config.update()
-
-            if thread is None:
-                await self.db.insert_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id), 'claimers': [str(ctx.author.id)]})
-                async with ctx.typing():
-                    await recipient.send(embed=embed)
-                description += "Please respond to the case asap."
-                embed.description = description
-                await ctx.reply(embed=embed)
-            elif thread and len(thread['claimers']) == 0:
-                await self.db.find_one_and_update({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)}, {'$addToSet': {'claimers': str(ctx.author.id)}})
-                async with ctx.typing():
-                    await recipient.send(embed=embed)
-                description += "Please respond to the case asap."
-                embed.description = description
-                await ctx.reply(embed=embed)
-            else:
-                description += "Thread is already claimed"
-                embed.description = description
-                await ctx.reply(embed=embed)
+                    description += "Thread is already claimed"
+                    embed.description = description
+                    await ctx.reply(embed=embed)
+                    await self.log_action(ctx, "Claim Attempt Failed", error="Already claimed")
+                    
+        except Exception as e:
+            error_traceback = traceback.format_exc()
+            await self.log_action(ctx, "Claim Error", error=error_traceback)
+            await ctx.send(f"An error occurred while claiming the thread: {str(e)}")
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @commands.command()
@@ -147,28 +344,50 @@ class ClaimThread(commands.Cog):
     @commands.command()
     async def unclaim(self, ctx):
         """Unclaim a thread"""
-        embed = discord.Embed(color=self.bot.main_color)
-        description = ""
-        thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
-        if thread and str(ctx.author.id) in thread['claimers']:
-            await self.db.find_one_and_update({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)}, {'$pull': {'claimers': str(ctx.author.id)}})
-            description += 'Removed from claimers.\n'
+        try:
+            embed = discord.Embed(color=self.bot.main_color)
+            description = ""
+            thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
+            
+            if thread and str(ctx.author.id) in thread['claimers']:
+                await self.db.find_one_and_update(
+                    {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)}, 
+                    {'$pull': {'claimers': str(ctx.author.id)}}
+                )
+                description += 'Removed from claimers.\n'
+                
+                # Rename channel back
+                try:
+                    original_name = ctx.channel.name.split('-claimed-by-')[0]
+                    await ctx.channel.edit(name=original_name)
+                except discord.Forbidden:
+                    description += "\nCouldn't rename channel - missing permissions."
+                except Exception as e:
+                    description += f"\nError renaming channel: {str(e)}"
+                
+                await self.log_action(ctx, "Ticket Unclaimed")
 
-        if str(ctx.thread.id) not in self.bot.config["subscriptions"]:
-            self.bot.config["subscriptions"][str(ctx.thread.id)] = []
+            # Rest of the unclaim code...
+            if str(ctx.thread.id) not in self.bot.config["subscriptions"]:
+                self.bot.config["subscriptions"][str(ctx.thread.id)] = []
 
-        mentions = self.bot.config["subscriptions"][str(ctx.thread.id)]
+            mentions = self.bot.config["subscriptions"][str(ctx.thread.id)]
 
-        if ctx.author.mention in mentions:
-            mentions.remove(ctx.author.mention)
-            await self.bot.config.update()
-            description += f"{ctx.author.mention} is now unsubscribed from this thread."
+            if ctx.author.mention in mentions:
+                mentions.remove(ctx.author.mention)
+                await self.bot.config.update()
+                description += f"{ctx.author.mention} is now unsubscribed from this thread."
 
-        if description == "":
-            description = "Nothing to do"
+            if description == "":
+                description = "Nothing to do"
 
-        embed.description = description
-        await ctx.send(embed=embed)
+            embed.description = description
+            await ctx.send(embed=embed)
+            
+        except Exception as e:
+            error_traceback = traceback.format_exc()
+            await self.log_action(ctx, "Unclaim Error", error=error_traceback)
+            await ctx.send(f"An error occurred while unclaiming the thread: {str(e)}")
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
     @checks.thread_only()
@@ -248,6 +467,7 @@ class ClaimThread(commands.Cog):
         if thread:
             await self.db.find_one_and_update({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)}, {'$addToSet': {'claimers': str(member.id)}})
             await ctx.send('Added to claimers')
+
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
     @commands.guild_only()
@@ -336,6 +556,7 @@ async def check_reply(ctx):
                         in_role = True
         return ctx.author.bot or in_role or str(ctx.author.id) in thread['claimers']
     return True
+
 
 async def setup(bot):
     await bot.add_cog(ClaimThread(bot))
