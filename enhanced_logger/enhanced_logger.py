@@ -31,7 +31,7 @@ class EnhancedLogger(commands.Cog):
                     'response_times': [],
                     'handlers': []
                 })
-                print(f"New ticket logged: {thread.id} at {current_time}")
+                print(f"New ticket logged: {thread.id} by {creator}")
         except Exception as e:
             print(f"Error logging thread creation: {e}")
 
@@ -39,21 +39,23 @@ class EnhancedLogger(commands.Cog):
     async def on_thread_reply(self, thread, reply, creator, message, anonymous):
         """Track message exchanges and response times"""
         try:
-            if message and hasattr(message, 'content'):
+            if reply and creator:  # Using reply instead of message
                 current_time = datetime.utcnow()
+                is_staff = hasattr(creator, 'roles')  # Check if author has roles (staff member)
+                
                 await self.db.update_one(
                     {'thread_id': str(thread.id)},
                     {'$push': {
                         'messages': {
                             'author_id': str(creator.id),
                             'author_name': str(creator),
-                            'content': message.content,
+                            'content': reply,  # Using reply content
                             'timestamp': current_time,
-                            'is_staff': not isinstance(creator, discord.User)
+                            'is_staff': is_staff
                         }
                     }}
                 )
-                print(f"Message logged for ticket {thread.id} at {current_time}")
+                print(f"Message logged for ticket {thread.id} by {creator} (Staff: {is_staff})")
         except Exception as e:
             print(f"Error logging message: {e}")
 
@@ -63,7 +65,6 @@ class EnhancedLogger(commands.Cog):
         try:
             if thread and closer:
                 current_time = datetime.utcnow()
-                # Get the thread creation time from our database
                 thread_data = await self.db.find_one({'thread_id': str(thread.id)})
                 
                 if thread_data:
@@ -81,9 +82,7 @@ class EnhancedLogger(commands.Cog):
                             'resolution_time': resolution_time
                         }}
                     )
-                    print(f"Ticket {thread.id} closed at {current_time} after {resolution_time:.1f} minutes")
-                else:
-                    print(f"Warning: Could not find ticket {thread.id} in database during closure")
+                    print(f"Ticket {thread.id} closed by {closer} after {resolution_time:.1f} minutes")
         except Exception as e:
             print(f"Error logging thread closure: {e}")
 
@@ -115,15 +114,14 @@ class EnhancedLogger(commands.Cog):
         """View ticket statistics for the specified period"""
         try:
             start_date = datetime.utcnow() - timedelta(days=days)
-            print(f"Fetching stats from {start_date} to now")
+            print(f"Fetching stats from {start_date}")
             
-            # Get tickets in date range
             cursor = self.db.find({
                 'created_at': {'$gte': start_date}
             })
             
             tickets = await cursor.to_list(None)
-            print(f"Found {len(tickets)} tickets in date range")
+            print(f"Found {len(tickets)} tickets")
             
             if not tickets:
                 return await ctx.send(f"No tickets found in the last {days} days.")
@@ -172,21 +170,24 @@ class EnhancedLogger(commands.Cog):
         """View your personal ticket handling statistics"""
         try:
             start_date = datetime.utcnow() - timedelta(days=days)
-            print(f"Fetching personal stats for {ctx.author} from {start_date}")
+            print(f"Fetching stats for {ctx.author}")
             
-            # Get tickets where user sent messages
+            # Get tickets where user was involved
             cursor = self.db.find({
-                'messages': {
-                    '$elemMatch': {
-                        'author_id': str(ctx.author.id),
-                        'is_staff': True
-                    }
-                },
+                '$or': [
+                    {'closed_by': str(ctx.author.id)},
+                    {'messages': {
+                        '$elemMatch': {
+                            'author_id': str(ctx.author.id),
+                            'is_staff': True
+                        }
+                    }}
+                ],
                 'created_at': {'$gte': start_date}
             })
             
             tickets = await cursor.to_list(None)
-            print(f"Found {len(tickets)} tickets handled by {ctx.author}")
+            print(f"Found {len(tickets)} tickets for {ctx.author}")
             
             if not tickets:
                 return await ctx.send(f"No ticket activity found in the last {days} days.")
@@ -197,16 +198,19 @@ class EnhancedLogger(commands.Cog):
                 timestamp=ctx.message.created_at
             )
             
-            # Count messages
-            total_messages = sum(
-                sum(1 for m in t.get('messages', [])
-                    if m.get('author_id') == str(ctx.author.id) and m.get('is_staff'))
-                for t in tickets
-            )
+            # Count messages and closed tickets
+            total_messages = 0
+            closed_tickets = 0
             
-            # Count closed tickets
-            closed_tickets = sum(1 for t in tickets if t.get('status') == 'closed' 
-                               and t.get('closed_by') == str(ctx.author.id))
+            for ticket in tickets:
+                messages = ticket.get('messages', [])
+                total_messages += sum(1 for m in messages 
+                                    if m.get('author_id') == str(ctx.author.id) 
+                                    and m.get('is_staff'))
+                
+                if (ticket.get('status') == 'closed' 
+                    and ticket.get('closed_by') == str(ctx.author.id)):
+                    closed_tickets += 1
             
             embed.add_field(
                 name="Activity Overview",
