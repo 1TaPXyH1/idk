@@ -118,8 +118,13 @@ class ClaimThread(commands.Cog):
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @checks.thread_only()
     @commands.group(name='claim', invoke_without_command=True)
-    async def claim_(self, ctx, subscribe: bool = True):
-        """Claim a thread"""
+    @commands.cooldown(1, 5, commands.BucketType.channel)  # One claim per channel every 5 seconds
+    async def claim_(self, ctx, subscribe: bool = True, rename: bool = False):
+        """Claim a thread
+        
+        Usage: ?claim [subscribe=True] [rename=False]
+        Example: ?claim true true - Claims thread, subscribes, and renames channel
+        Example: ?claim - Claims thread with default settings"""
         try:
             if not ctx.invoked_subcommand:
                 if not await self.check_claimer(ctx, ctx.author.id):
@@ -155,16 +160,17 @@ class ClaimThread(commands.Cog):
                             {'$unset': {'status': ''}}
                         )
 
-                    # Update channel name
-                    new_name = f"{ctx.author.display_name} claimed"
-                    try:
-                        await ctx.thread.channel.edit(name=new_name)
-                    except discord.Forbidden:
-                        description += "\nFailed to rename channel (Missing Permissions)"
-                    except discord.HTTPException:
-                        description += "\nFailed to rename channel"
-                    except Exception:
-                        description += "\nFailed to rename channel (Unknown error)"
+                    # Update channel name only if rename is True
+                    if rename:
+                        new_name = f"{ctx.author.display_name} claimed"
+                        try:
+                            await ctx.thread.channel.edit(name=new_name)
+                        except discord.Forbidden:
+                            description += "\nFailed to rename channel (Missing Permissions)"
+                        except discord.HTTPException:
+                            description += "\nFailed to rename channel (Rate Limited)"
+                        except Exception:
+                            description += "\nFailed to rename channel (Unknown error)"
 
                     try:
                         if thread is None:
@@ -183,7 +189,7 @@ class ClaimThread(commands.Cog):
                                 }
                             )
                         
-                        description += "Please respond to the case asap."
+                        description += "Successfully claimed the thread. Please respond to the case asap."
                     except Exception as e:
                         description += f"\nFailed to update database: {str(e)}"
                     
@@ -212,7 +218,13 @@ class ClaimThread(commands.Cog):
             except discord.NotFound:
                 pass
 
+    @claim_.error
+    async def claim_error(self, ctx, error):
+        if isinstance(error, commands.CommandOnCooldown):
+            await ctx.send(f"This command is on cooldown. Try again in {error.retry_after:.1f} seconds.")
+
     @checks.has_permissions(PermissionLevel.SUPPORTER)
+    @checks.thread_only()
     @commands.command()
     async def claims(self, ctx):
         """Check which channels you have claimed"""
