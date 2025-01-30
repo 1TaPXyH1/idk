@@ -16,11 +16,29 @@ class EnhancedLogger(commands.Cog):
 
     async def get_log_channel(self):
         """Get the configured log channel"""
-        config = await self.bot.get_data()
-        log_channel_id = config.get('log_channel_id')
-        if log_channel_id:
-            return self.bot.get_channel(int(log_channel_id))
+        config = await self.db.find_one({'_id': 'config'})
+        if config and 'log_channel_id' in config:
+            return self.bot.get_channel(int(config['log_channel_id']))
         return None
+
+    @commands.command()
+    @checks.has_permissions(PermissionLevel.ADMIN)
+    async def setlogchannel(self, ctx, channel: discord.TextChannel = None):
+        """Set the channel for enhanced logging
+        
+        Usage: `?setlogchannel #channel`
+        If no channel is provided, it will use the current channel.
+        """
+        channel = channel or ctx.channel
+        
+        await self.db.find_one_and_update(
+            {'_id': 'config'},
+            {'$set': {'log_channel_id': str(channel.id)}},
+            upsert=True
+        )
+        
+        await ctx.send(f"Enhanced logging channel set to {channel.mention}")
+        print(f"Log channel set to: {channel.id}")
 
     @commands.Cog.listener()
     async def on_thread_ready(self, thread, creator, category, initial_message):
@@ -78,74 +96,56 @@ class EnhancedLogger(commands.Cog):
             # Get the log channel
             log_channel = await self.get_log_channel()
             if not log_channel:
-                print("Log channel not found")
+                print("Log channel not found - please set one using ?setlogchannel")
                 return
 
             print(f"Processing closure for thread {thread.id}")
+            thread_data = await self.db.find_one({'thread_id': str(thread.id)})
 
-            # Find the log message in the log channel
-            log_message = None
+            # Create enhanced embed
+            embed = discord.Embed(
+                title="📝 Enhanced Ticket Log",
+                description=f"Additional information for ticket {thread.id}",
+                color=self.bot.main_color,
+                timestamp=datetime.utcnow()
+            )
+
+            # Basic ticket info
+            creator_name = thread_data['creator_name'] if thread_data else "Unknown"
+            created_at = thread_data.get('created_at', datetime.utcnow()) if thread_data else datetime.utcnow()
+            
+            embed.add_field(
+                name="Ticket Information",
+                value=f"**Creator:** {creator_name}\n"
+                      f"**Created:** {created_at.strftime('%Y-%m-%d %H:%M:%S')}",
+                inline=False
+            )
+
+            # Claim information if available
+            if thread_data and thread_data.get('claimed_by'):
+                claimed_by = thread_data.get('claimed_by', 'Not Claimed')
+                claim_time = thread_data.get('claim_time', datetime.utcnow())
+                embed.add_field(
+                    name="Claim Information",
+                    value=f"**Claimed By:** {claimed_by}\n"
+                          f"**Claimed At:** {claim_time.strftime('%Y-%m-%d %H:%M:%S')}",
+                    inline=False
+                )
+
+            # Closure information
+            close_reason = message if message else 'No reason provided'
+            embed.add_field(
+                name="Closure Information",
+                value=f"**Closed By:** {closer}\n"
+                      f"**Close Reason:** {close_reason}",
+                inline=False
+            )
+
             try:
-                async for msg in log_channel.history(limit=30):  # Increased limit to find recent log
-                    if msg.embeds:
-                        for embed in msg.embeds:
-                            # Check if this log message is for our thread
-                            if str(thread.id) in str(embed.description):
-                                log_message = msg
-                                break
-                    if log_message:
-                        break
+                await log_channel.send(embed=embed)
+                print(f"Enhanced log created for ticket {thread.id}")
             except Exception as e:
-                print(f"Error searching log channel history: {e}")
-                return
-
-            if log_message:
-                thread_data = await self.db.find_one({'thread_id': str(thread.id)})
-                
-                # Create enhanced embed
-                embed = discord.Embed(
-                    title="📝 Enhanced Ticket Log",
-                    description="Additional ticket information",
-                    color=self.bot.main_color,
-                    timestamp=datetime.utcnow()
-                )
-
-                # Basic ticket info
-                creator_name = thread_data['creator_name'] if thread_data else "Unknown"
-                created_at = thread_data.get('created_at', datetime.utcnow()) if thread_data else datetime.utcnow()
-                
-                embed.add_field(
-                    name="Ticket Information",
-                    value=f"**Creator:** {creator_name}\n"
-                          f"**Created:** {created_at.strftime('%Y-%m-%d %H:%M:%S')}",
-                    inline=False
-                )
-
-                # Claim information if available
-                if thread_data and thread_data.get('claimed_by'):
-                    claimed_by = thread_data.get('claimed_by', 'Not Claimed')
-                    claim_time = thread_data.get('claim_time', datetime.utcnow())
-                    embed.add_field(
-                        name="Claim Information",
-                        value=f"**Claimed By:** {claimed_by}\n"
-                              f"**Claimed At:** {claim_time.strftime('%Y-%m-%d %H:%M:%S')}",
-                        inline=False
-                    )
-
-                # Closure information
-                close_reason = message if message else 'No reason provided'
-                embed.add_field(
-                    name="Closure Information",
-                    value=f"**Closed By:** {closer}\n"
-                          f"**Close Reason:** {close_reason}",
-                    inline=False
-                )
-
-                try:
-                    await log_message.reply(embed=embed)
-                    print(f"Enhanced log created for ticket {thread.id}")
-                except Exception as e:
-                    print(f"Error sending enhanced log: {e}")
+                print(f"Error sending enhanced log: {e}")
 
         except Exception as e:
             print(f"Error creating enhanced log: {e}")
