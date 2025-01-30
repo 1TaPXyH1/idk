@@ -15,45 +15,58 @@ class EnhancedLogger(commands.Cog):
         self.analytics_cache = {}
 
     @commands.Cog.listener()
-    async def on_thread_create(self, thread):
+    async def on_thread_ready(self, thread, creator, category, initial_message):
         """Log new ticket creation"""
-        await self.db.insert_one({
-            'thread_id': str(thread.id),
-            'creator_id': str(thread.recipient.id),
-            'created_at': datetime.utcnow(),
-            'status': 'open',
-            'messages': [],
-            'response_times': [],
-            'handlers': []
-        })
+        try:
+            await self.db.insert_one({
+                'thread_id': str(thread.id),
+                'creator_id': str(creator.id),
+                'creator_name': str(creator),
+                'created_at': datetime.utcnow(),
+                'status': 'open',
+                'messages': [],
+                'response_times': [],
+                'handlers': []
+            })
+        except Exception as e:
+            print(f"Error logging thread creation: {e}")
 
     @commands.Cog.listener()
-    async def on_thread_reply(self, thread, message):
+    async def on_thread_reply(self, thread, reply, creator, message, anonymous):
         """Track message exchanges and response times"""
-        await self.db.update_one(
-            {'thread_id': str(thread.id)},
-            {'$push': {
-                'messages': {
-                    'author_id': str(message.author.id),
-                    'content': message.content,
-                    'timestamp': message.created_at,
-                    'is_staff': message.author.id != thread.recipient.id
-                }
-            }}
-        )
+        try:
+            await self.db.update_one(
+                {'thread_id': str(thread.id)},
+                {'$push': {
+                    'messages': {
+                        'author_id': str(creator.id),
+                        'author_name': str(creator),
+                        'content': message.content,
+                        'timestamp': message.created_at,
+                        'is_staff': not isinstance(creator, discord.User)  # True if not a regular user
+                    }
+                }}
+            )
+        except Exception as e:
+            print(f"Error logging message: {e}")
 
     @commands.Cog.listener()
-    async def on_thread_close(self, thread, closer, logs):
+    async def on_thread_close(self, thread, closer, silent, delete_channel, message):
         """Track thread closure"""
-        await self.db.update_one(
-            {'thread_id': str(thread.id)},
-            {'$set': {
-                'closed_by': str(closer.id),
-                'closed_at': datetime.utcnow(),
-                'status': 'closed',
-                'resolution_time': (datetime.utcnow() - thread.created_at).total_seconds() / 60
-            }}
-        )
+        try:
+            await self.db.update_one(
+                {'thread_id': str(thread.id)},
+                {'$set': {
+                    'closed_by': str(closer.id),
+                    'closer_name': str(closer),
+                    'closed_at': datetime.utcnow(),
+                    'status': 'closed',
+                    'close_message': message if message else "No message provided",
+                    'resolution_time': (datetime.utcnow() - thread.created_at).total_seconds() / 60
+                }}
+            )
+        except Exception as e:
+            print(f"Error logging thread closure: {e}")
 
     def calculate_avg_response_time(self, messages):
         """Calculate average response time between messages"""
@@ -78,202 +91,112 @@ class EnhancedLogger(commands.Cog):
         return sum(handle_times) / len(handle_times) if handle_times else 0
 
     @commands.command()
-    @checks.has_permissions(PermissionLevel.SUPPORTER)
-    async def viewlog(self, ctx, thread_id: str = None):
-        """View detailed log of a ticket"""
-        if not thread_id:
-            thread_id = str(ctx.channel.id)
-            
-        log = await self.db.find_one({'thread_id': thread_id})
-        if not log:
-            return await ctx.send("No log found for this ticket.")
-            
-        embed = discord.Embed(
-            title=f"Ticket Log #{thread_id}",
-            color=self.bot.main_color
-        )
-        
-        # Basic Info
-        embed.add_field(
-            name="Created",
-            value=f"<t:{int(log['created_at'].timestamp())}:R>",
-            inline=True
-        )
-        
-        # Handler Info
-        handlers = log.get('handlers', [])
-        if handlers:
-            handler_text = "\n".join(f"• {h['name']} (<t:{int(h['claimed_at'].timestamp())}:R>)" 
-                                   for h in handlers)
-            embed.add_field(
-                name="Handlers",
-                value=handler_text,
-                inline=False
-            )
-        
-        # Response Stats
-        messages = log.get('messages', [])
-        if messages:
-            staff_msgs = sum(1 for m in messages if m['is_staff'])
-            user_msgs = len(messages) - staff_msgs
-            avg_response = self.calculate_avg_response_time(messages)
-            
-            embed.add_field(
-                name="Message Stats",
-                value=f"Staff Messages: {staff_msgs}\n"
-                      f"User Messages: {user_msgs}\n"
-                      f"Avg Response Time: {avg_response:.1f}min",
-                inline=False
-            )
-        
-        # Status Info
-        status = log.get('status', 'open')
-        if status == 'closed':
-            closed_time = log.get('closed_at')
-            if closed_time:
-                embed.add_field(
-                    name="Closed",
-                    value=f"<t:{int(closed_time.timestamp())}:R>",
-                    inline=True
-                )
-                
-            resolution_time = log.get('resolution_time')
-            if resolution_time:
-                embed.add_field(
-                    name="Resolution Time",
-                    value=f"{resolution_time:.1f} minutes",
-                    inline=True
-                )
-        
-        await ctx.send(embed=embed)
-
-    @commands.command()
     @checks.has_permissions(PermissionLevel.MODERATOR)
     async def ticketstats(self, ctx, days: int = 7):
         """View ticket statistics for the specified period"""
-        start_date = datetime.utcnow() - timedelta(days=days)
-        
-        # Get tickets in date range
-        tickets = await self.db.find({
-            'created_at': {'$gte': start_date}
-        }).to_list(None)
-        
-        embed = discord.Embed(
-            title=f"Ticket Statistics (Last {days} days)",
-            color=self.bot.main_color
-        )
-        
-        if not tickets:
-            embed.description = "No tickets found in the specified time period."
-            return await ctx.send(embed=embed)
-        
-        # Basic Stats
-        total_tickets = len(tickets)
-        closed_tickets = sum(1 for t in tickets if t.get('status') == 'closed')
-        avg_time = self.calculate_avg_handle_time(tickets)
-        
-        embed.add_field(
-            name="Overview",
-            value=f"Total Tickets: {total_tickets}\n"
-                  f"Resolved: {closed_tickets}\n"
-                  f"Resolution Rate: {(closed_tickets/total_tickets)*100:.1f}%\n"
-                  f"Avg Handle Time: {avg_time:.1f}min",
-            inline=False
-        )
-        
-        # Top Handlers
-        handler_stats = {}
-        for ticket in tickets:
-            for handler in ticket.get('handlers', []):
-                handler_stats[handler['name']] = handler_stats.get(handler['name'], 0) + 1
-        
-        top_handlers = sorted(handler_stats.items(), key=lambda x: x[1], reverse=True)[:5]
-        if top_handlers:
+        try:
+            start_date = datetime.utcnow() - timedelta(days=days)
+            
+            # Get tickets in date range
+            cursor = self.db.find({
+                'created_at': {'$gte': start_date}
+            })
+            
+            tickets = await cursor.to_list(None)
+            
+            if not tickets:
+                return await ctx.send(f"No tickets found in the last {days} days.")
+            
+            embed = discord.Embed(
+                title=f"Ticket Statistics (Last {days} days)",
+                color=self.bot.main_color,
+                timestamp=ctx.message.created_at
+            )
+            
+            # Basic Stats
+            total = len(tickets)
+            closed = sum(1 for t in tickets if t.get('status') == 'closed')
+            open_tickets = total - closed
+            
             embed.add_field(
-                name="Top Handlers",
-                value="\n".join(f"• {name}: {count} tickets" for name, count in top_handlers),
+                name="Overview",
+                value=f"Total Tickets: {total}\n"
+                      f"Open: {open_tickets}\n"
+                      f"Closed: {closed}\n"
+                      f"Close Rate: {(closed/total)*100:.1f}%",
                 inline=False
             )
-        
-        # Response Time Analysis
-        response_times = []
-        for ticket in tickets:
-            messages = ticket.get('messages', [])
-            if messages:
-                avg_response = self.calculate_avg_response_time(messages)
-                if avg_response > 0:
-                    response_times.append(avg_response)
-        
-        if response_times:
-            avg_response = sum(response_times) / len(response_times)
-            embed.add_field(
-                name="Response Times",
-                value=f"Average: {avg_response:.1f}min\n"
-                      f"Fastest: {min(response_times):.1f}min\n"
-                      f"Slowest: {max(response_times):.1f}min",
-                inline=False
-            )
-        
-        await ctx.send(embed=embed)
+            
+            # Response Times
+            closed_tickets = [t for t in tickets if t.get('status') == 'closed']
+            if closed_tickets:
+                times = [t.get('resolution_time', 0) for t in closed_tickets]
+                avg_time = sum(times) / len(times)
+                embed.add_field(
+                    name="Resolution Times",
+                    value=f"Average: {avg_time:.1f} minutes\n"
+                          f"Fastest: {min(times):.1f} minutes\n"
+                          f"Slowest: {max(times):.1f} minutes",
+                    inline=False
+                )
+            
+            await ctx.send(embed=embed)
+            
+        except Exception as e:
+            await ctx.send(f"Error retrieving statistics: {e}")
 
     @commands.command()
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     async def mystats(self, ctx, days: int = 30):
         """View your personal ticket handling statistics"""
-        start_date = datetime.utcnow() - timedelta(days=days)
-        
-        # Get tickets handled by the user
-        tickets = await self.db.find({
-            'handlers.id': str(ctx.author.id),
-            'created_at': {'$gte': start_date}
-        }).to_list(None)
-        
-        embed = discord.Embed(
-            title=f"Your Ticket Stats (Last {days} days)",
-            color=self.bot.main_color
-        )
-        
-        if not tickets:
-            embed.description = "No tickets found in the specified time period."
-            return await ctx.send(embed=embed)
-        
-        # Calculate stats
-        total_handled = len(tickets)
-        closed_tickets = sum(1 for t in tickets if t.get('status') == 'closed')
-        avg_time = self.calculate_avg_handle_time(tickets)
-        
-        embed.add_field(
-            name="Your Overview",
-            value=f"Tickets Handled: {total_handled}\n"
-                  f"Resolved: {closed_tickets}\n"
-                  f"Resolution Rate: {(closed_tickets/total_handled)*100:.1f}%\n"
-                  f"Avg Handle Time: {avg_time:.1f}min",
-            inline=False
-        )
-        
-        # Response time analysis
-        response_times = []
-        total_messages = 0
-        for ticket in tickets:
-            messages = ticket.get('messages', [])
-            if messages:
-                staff_messages = sum(1 for m in messages if m['is_staff'] and m['author_id'] == str(ctx.author.id))
-                total_messages += staff_messages
-                avg_response = self.calculate_avg_response_time(messages)
-                if avg_response > 0:
-                    response_times.append(avg_response)
-        
-        if response_times:
-            avg_response = sum(response_times) / len(response_times)
+        try:
+            start_date = datetime.utcnow() - timedelta(days=days)
+            
+            # Get tickets where user sent messages
+            cursor = self.db.find({
+                'messages': {
+                    '$elemMatch': {
+                        'author_id': str(ctx.author.id),
+                        'is_staff': True
+                    }
+                },
+                'created_at': {'$gte': start_date}
+            })
+            
+            tickets = await cursor.to_list(None)
+            
+            if not tickets:
+                return await ctx.send(f"No ticket activity found in the last {days} days.")
+            
+            embed = discord.Embed(
+                title=f"Your Ticket Stats (Last {days} days)",
+                color=self.bot.main_color,
+                timestamp=ctx.message.created_at
+            )
+            
+            # Count messages
+            total_messages = sum(
+                sum(1 for m in t.get('messages', [])
+                    if m.get('author_id') == str(ctx.author.id) and m.get('is_staff'))
+                for t in tickets
+            )
+            
+            # Count closed tickets
+            closed_tickets = sum(1 for t in tickets if t.get('status') == 'closed' 
+                               and t.get('closed_by') == str(ctx.author.id))
+            
             embed.add_field(
-                name="Your Response Stats",
-                value=f"Total Messages: {total_messages}\n"
-                      f"Avg Response Time: {avg_response:.1f}min\n"
-                      f"Best Response Time: {min(response_times):.1f}min",
+                name="Activity Overview",
+                value=f"Tickets Handled: {len(tickets)}\n"
+                      f"Messages Sent: {total_messages}\n"
+                      f"Tickets Closed: {closed_tickets}",
                 inline=False
             )
-        
-        await ctx.send(embed=embed)
+            
+            await ctx.send(embed=embed)
+            
+        except Exception as e:
+            await ctx.send(f"Error retrieving your statistics: {e}")
 
 async def setup(bot):
     await bot.add_cog(EnhancedLogger(bot))
