@@ -101,27 +101,30 @@ class EnhancedLogger(commands.Cog):
 
             print(f"Processing closure for thread {thread.id}")
 
+            # Get thread data
+            thread_data = await self.db.find_one({'thread_id': str(thread.id)})
+            current_time = datetime.utcnow()
+
             # Create enhanced embed
             embed = discord.Embed(
                 title="📝 Enhanced Ticket Log",
                 description=f"Additional information for ticket {thread.id}",
                 color=self.bot.main_color,
-                timestamp=datetime.utcnow()
+                timestamp=current_time
             )
 
             # Basic ticket info
             embed.add_field(
                 name="Ticket Information",
                 value=f"**Creator:** {thread.recipient}\n"
-                      f"**Created:** {thread.created_at.strftime('%Y-%m-%d %H:%M:%S')}",
+                      f"**Channel:** {thread.channel.name if hasattr(thread, 'channel') else 'Unknown'}",
                 inline=False
             )
 
             # Claim information if available
-            thread_data = await self.db.find_one({'thread_id': str(thread.id)})
             if thread_data and thread_data.get('claimed_by'):
                 claimed_by = thread_data.get('claimed_by', 'Not Claimed')
-                claim_time = thread_data.get('claim_time', datetime.utcnow())
+                claim_time = thread_data.get('claim_time', current_time)
                 embed.add_field(
                     name="Claim Information",
                     value=f"**Claimed By:** {claimed_by}\n"
@@ -134,7 +137,8 @@ class EnhancedLogger(commands.Cog):
             embed.add_field(
                 name="Closure Information",
                 value=f"**Closed By:** {closer}\n"
-                      f"**Close Reason:** {close_reason}",
+                      f"**Close Reason:** {close_reason}\n"
+                      f"**Closed At:** {current_time.strftime('%Y-%m-%d %H:%M:%S')}",
                 inline=False
             )
 
@@ -152,12 +156,14 @@ class EnhancedLogger(commands.Cog):
         """Track when someone claims a ticket"""
         try:
             if thread and user:
+                current_time = datetime.utcnow()
                 await self.db.update_one(
                     {'thread_id': str(thread.id)},
                     {'$set': {
                         'claimed_by': str(user),
-                        'claim_time': datetime.utcnow()
-                    }}
+                        'claim_time': current_time
+                    }},
+                    upsert=True
                 )
                 print(f"Ticket {thread.id} claimed by {user}")
         except Exception as e:
