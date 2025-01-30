@@ -19,16 +19,19 @@ class EnhancedLogger(commands.Cog):
         """Log new ticket creation"""
         try:
             if thread and creator:
+                current_time = datetime.utcnow()
                 await self.db.insert_one({
                     'thread_id': str(thread.id),
+                    'channel_id': str(thread.channel.id),
                     'creator_id': str(creator.id),
                     'creator_name': str(creator),
-                    'created_at': datetime.utcnow(),
+                    'created_at': current_time,
                     'status': 'open',
                     'messages': [],
                     'response_times': [],
                     'handlers': []
                 })
+                print(f"New ticket logged: {thread.id} at {current_time}")
         except Exception as e:
             print(f"Error logging thread creation: {e}")
 
@@ -37,6 +40,7 @@ class EnhancedLogger(commands.Cog):
         """Track message exchanges and response times"""
         try:
             if message and hasattr(message, 'content'):
+                current_time = datetime.utcnow()
                 await self.db.update_one(
                     {'thread_id': str(thread.id)},
                     {'$push': {
@@ -44,11 +48,12 @@ class EnhancedLogger(commands.Cog):
                             'author_id': str(creator.id),
                             'author_name': str(creator),
                             'content': message.content,
-                            'timestamp': datetime.utcnow(),
+                            'timestamp': current_time,
                             'is_staff': not isinstance(creator, discord.User)
                         }
                     }}
                 )
+                print(f"Message logged for ticket {thread.id} at {current_time}")
         except Exception as e:
             print(f"Error logging message: {e}")
 
@@ -57,25 +62,28 @@ class EnhancedLogger(commands.Cog):
         """Track thread closure"""
         try:
             if thread and closer:
+                current_time = datetime.utcnow()
                 # Get the thread creation time from our database
                 thread_data = await self.db.find_one({'thread_id': str(thread.id)})
+                
                 if thread_data:
-                    created_at = thread_data.get('created_at', datetime.utcnow())
-                    resolution_time = (datetime.utcnow() - created_at).total_seconds() / 60
+                    created_at = thread_data.get('created_at', current_time)
+                    resolution_time = (current_time - created_at).total_seconds() / 60
+                    
+                    await self.db.update_one(
+                        {'thread_id': str(thread.id)},
+                        {'$set': {
+                            'closed_by': str(closer.id),
+                            'closer_name': str(closer),
+                            'closed_at': current_time,
+                            'status': 'closed',
+                            'close_message': str(message) if message else "No message provided",
+                            'resolution_time': resolution_time
+                        }}
+                    )
+                    print(f"Ticket {thread.id} closed at {current_time} after {resolution_time:.1f} minutes")
                 else:
-                    resolution_time = 0
-
-                await self.db.update_one(
-                    {'thread_id': str(thread.id)},
-                    {'$set': {
-                        'closed_by': str(closer.id),
-                        'closer_name': str(closer),
-                        'closed_at': datetime.utcnow(),
-                        'status': 'closed',
-                        'close_message': str(message) if message else "No message provided",
-                        'resolution_time': resolution_time
-                    }}
-                )
+                    print(f"Warning: Could not find ticket {thread.id} in database during closure")
         except Exception as e:
             print(f"Error logging thread closure: {e}")
 
@@ -107,6 +115,7 @@ class EnhancedLogger(commands.Cog):
         """View ticket statistics for the specified period"""
         try:
             start_date = datetime.utcnow() - timedelta(days=days)
+            print(f"Fetching stats from {start_date} to now")
             
             # Get tickets in date range
             cursor = self.db.find({
@@ -114,6 +123,7 @@ class EnhancedLogger(commands.Cog):
             })
             
             tickets = await cursor.to_list(None)
+            print(f"Found {len(tickets)} tickets in date range")
             
             if not tickets:
                 return await ctx.send(f"No tickets found in the last {days} days.")
@@ -162,6 +172,7 @@ class EnhancedLogger(commands.Cog):
         """View your personal ticket handling statistics"""
         try:
             start_date = datetime.utcnow() - timedelta(days=days)
+            print(f"Fetching personal stats for {ctx.author} from {start_date}")
             
             # Get tickets where user sent messages
             cursor = self.db.find({
@@ -175,6 +186,7 @@ class EnhancedLogger(commands.Cog):
             })
             
             tickets = await cursor.to_list(None)
+            print(f"Found {len(tickets)} tickets handled by {ctx.author}")
             
             if not tickets:
                 return await ctx.send(f"No ticket activity found in the last {days} days.")
