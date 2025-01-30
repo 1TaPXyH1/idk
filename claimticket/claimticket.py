@@ -761,6 +761,42 @@ class ClaimThread(commands.Cog):
         except (discord.Forbidden, discord.HTTPException, Exception):
             await ctx.message.add_reaction('❌')
 
+    @commands.command()
+    @checks.thread_only()
+    async def change(self, ctx, *, member: discord.Member):
+        """Change the claimer of the thread (Override permission required)"""
+        # Check if user has override permission
+        has_override = False
+        if config := await self.db.find_one({'_id': 'config'}):
+            if 'override_roles' in config:
+                override_roles = [ctx.guild.get_role(r) for r in config['override_roles'] if ctx.guild.get_role(r) is not None]
+                for role in override_roles:
+                    if role in ctx.author.roles:
+                        has_override = True
+                        break
+
+        if not has_override:
+            await ctx.message.add_reaction('❌')
+            return
+
+        try:
+            # Update database
+            thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
+            if thread:
+                await self.db.find_one_and_update(
+                    {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)},
+                    {'$set': {'claimers': [str(member.id)]}}
+                )
+                
+                # Rename channel
+                new_name = f"{member.display_name} claimed"
+                await ctx.thread.channel.edit(name=new_name)
+                await ctx.message.add_reaction('✅')
+            else:
+                await ctx.message.add_reaction('❌')
+        except:
+            await ctx.message.add_reaction('❌')
+
 
 async def check_reply(ctx):
     thread = await ctx.bot.get_cog('ClaimThread').db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(ctx.bot.modmail_guild.id)})
