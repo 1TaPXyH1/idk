@@ -20,18 +20,21 @@ class EnhancedLogger(commands.Cog):
         try:
             if thread and creator:
                 current_time = datetime.utcnow()
-                await self.db.insert_one({
-                    'thread_id': str(thread.id),
-                    'channel_id': str(thread.channel.id),
-                    'creator_id': str(creator.id),
-                    'creator_name': str(creator),
-                    'created_at': current_time,
-                    'status': 'open',
-                    'messages': [],
-                    'response_times': [],
-                    'handlers': []
-                })
-                print(f"New ticket logged: {thread.id} by {creator}")
+                # Check if ticket already exists
+                existing_ticket = await self.db.find_one({'thread_id': str(thread.id)})
+                if not existing_ticket:
+                    await self.db.insert_one({
+                        'thread_id': str(thread.id),
+                        'channel_id': str(thread.channel.id),
+                        'creator_id': str(creator.id),
+                        'creator_name': str(creator),
+                        'created_at': current_time,
+                        'status': 'open',
+                        'messages': [],
+                        'response_times': [],
+                        'handlers': []
+                    })
+                    print(f"New ticket logged: {thread.id} by {creator}")
         except Exception as e:
             print(f"Error logging thread creation: {e}")
 
@@ -39,9 +42,9 @@ class EnhancedLogger(commands.Cog):
     async def on_thread_reply(self, thread, reply, creator, message, anonymous):
         """Track message exchanges and response times"""
         try:
-            if reply and creator:  # Using reply instead of message
+            if reply and creator:
                 current_time = datetime.utcnow()
-                is_staff = hasattr(creator, 'roles')  # Check if author has roles (staff member)
+                is_staff = hasattr(creator, 'roles')
                 
                 await self.db.update_one(
                     {'thread_id': str(thread.id)},
@@ -49,7 +52,7 @@ class EnhancedLogger(commands.Cog):
                         'messages': {
                             'author_id': str(creator.id),
                             'author_name': str(creator),
-                            'content': reply,  # Using reply content
+                            'content': reply,
                             'timestamp': current_time,
                             'is_staff': is_staff
                         }
@@ -69,7 +72,9 @@ class EnhancedLogger(commands.Cog):
                 
                 if thread_data:
                     created_at = thread_data.get('created_at', current_time)
-                    resolution_time = (current_time - created_at).total_seconds() / 60
+                    # Calculate resolution time in minutes with decimal precision
+                    delta = current_time - created_at
+                    resolution_time = delta.total_seconds() / 60.0  # Convert to minutes
                     
                     await self.db.update_one(
                         {'thread_id': str(thread.id)},
@@ -82,7 +87,7 @@ class EnhancedLogger(commands.Cog):
                             'resolution_time': resolution_time
                         }}
                     )
-                    print(f"Ticket {thread.id} closed by {closer} after {resolution_time:.1f} minutes")
+                    print(f"Ticket {thread.id} closed by {closer} after {resolution_time:.2f} minutes")
         except Exception as e:
             print(f"Error logging thread closure: {e}")
 
@@ -151,11 +156,18 @@ class EnhancedLogger(commands.Cog):
             if closed_tickets:
                 times = [t.get('resolution_time', 0) for t in closed_tickets]
                 avg_time = sum(times) / len(times)
+                
+                # Convert to appropriate time format
+                def format_time(minutes):
+                    if minutes < 1:
+                        return f"{minutes * 60:.0f} seconds"
+                    return f"{minutes:.1f} minutes"
+                
                 embed.add_field(
                     name="Resolution Times",
-                    value=f"Average: {avg_time:.1f} minutes\n"
-                          f"Fastest: {min(times):.1f} minutes\n"
-                          f"Slowest: {max(times):.1f} minutes",
+                    value=f"Average: {format_time(avg_time)}\n"
+                          f"Fastest: {format_time(min(times))}\n"
+                          f"Slowest: {format_time(max(times))}",
                     inline=False
                 )
             
