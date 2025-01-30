@@ -100,7 +100,6 @@ class EnhancedLogger(commands.Cog):
                 return
 
             print(f"Processing closure for thread {thread.id}")
-            thread_data = await self.db.find_one({'thread_id': str(thread.id)})
 
             # Create enhanced embed
             embed = discord.Embed(
@@ -111,17 +110,15 @@ class EnhancedLogger(commands.Cog):
             )
 
             # Basic ticket info
-            creator_name = thread_data['creator_name'] if thread_data else "Unknown"
-            created_at = thread_data.get('created_at', datetime.utcnow()) if thread_data else datetime.utcnow()
-            
             embed.add_field(
                 name="Ticket Information",
-                value=f"**Creator:** {creator_name}\n"
-                      f"**Created:** {created_at.strftime('%Y-%m-%d %H:%M:%S')}",
+                value=f"**Creator:** {thread.recipient}\n"
+                      f"**Created:** {thread.created_at.strftime('%Y-%m-%d %H:%M:%S')}",
                 inline=False
             )
 
             # Claim information if available
+            thread_data = await self.db.find_one({'thread_id': str(thread.id)})
             if thread_data and thread_data.get('claimed_by'):
                 claimed_by = thread_data.get('claimed_by', 'Not Claimed')
                 claim_time = thread_data.get('claim_time', datetime.utcnow())
