@@ -18,9 +18,10 @@ class EnhancedLogger(commands.Cog):
     async def on_thread_ready(self, thread, creator, category, initial_message):
         """Initialize thread tracking"""
         try:
-            if thread and hasattr(thread, 'id'):
+            if thread and hasattr(thread, 'channel'):
                 await self.db.insert_one({
                     'thread_id': str(thread.id),
+                    'channel_id': str(thread.channel.id),
                     'creator_id': str(creator.id),
                     'creator_name': str(creator),
                     'created_at': datetime.utcnow(),
@@ -28,7 +29,7 @@ class EnhancedLogger(commands.Cog):
                     'claim_time': None,
                     'status': 'open'
                 })
-                print(f"New ticket created by {creator}")
+                print(f"New ticket created by {creator} in channel {thread.channel.id}")
         except Exception as e:
             print(f"Error initializing thread: {e}")
 
@@ -59,32 +60,35 @@ class EnhancedLogger(commands.Cog):
     async def on_thread_close(self, thread, closer, silent, delete_channel, message, time):
         """Enhanced log message when thread is closed"""
         try:
+            if not thread or not hasattr(thread, 'channel'):
+                print("No valid thread or channel found")
+                return
+
             thread_data = await self.db.find_one({'thread_id': str(thread.id)})
             if not thread_data:
+                print(f"No thread data found for {thread.id}")
                 return
 
             # Find the log message in the channel
             log_message = None
-            log_url = None
             
-            async for msg in thread.channel.history(limit=50):
-                if msg.embeds:
-                    for embed in msg.embeds:
-                        if embed.title and "Log" in embed.title:
-                            log_message = msg
-                            # Extract log URL from the embed
-                            for field in embed.fields:
-                                if "Logs" in field.name:
-                                    log_url = field.value
-                                    break
-                            break
-                if log_message:
-                    break
+            try:
+                async for msg in thread.channel.history(limit=10):
+                    if msg.embeds and any("Log" in embed.title for embed in msg.embeds):
+                        log_message = msg
+                        break
+            except discord.NotFound:
+                print(f"Channel not found for thread {thread.id}")
+                return
+            except Exception as e:
+                print(f"Error searching channel history: {e}")
+                return
 
             if log_message:
                 # Create enhanced embed
                 embed = discord.Embed(
                     title="📝 Enhanced Ticket Log",
+                    description="Additional ticket information",
                     color=self.bot.main_color,
                     timestamp=datetime.utcnow()
                 )
@@ -117,16 +121,11 @@ class EnhancedLogger(commands.Cog):
                     inline=False
                 )
 
-                # Add log link if found
-                if log_url:
-                    embed.add_field(
-                        name="Log Link",
-                        value=f"[View Full Log]({log_url})",
-                        inline=False
-                    )
-
-                await log_message.reply(embed=embed)
-                print(f"Enhanced log created for ticket {thread.id}")
+                try:
+                    await log_message.reply(embed=embed)
+                    print(f"Enhanced log created for ticket {thread.id}")
+                except Exception as e:
+                    print(f"Error sending enhanced log: {e}")
 
         except Exception as e:
             print(f"Error creating enhanced log: {e}")
