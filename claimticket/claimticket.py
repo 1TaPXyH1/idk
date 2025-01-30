@@ -4,6 +4,7 @@
 
 import discord
 from discord.ext import commands
+import time
 
 from core import checks
 from core.models import PermissionLevel
@@ -15,6 +16,8 @@ class ClaimThread(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.db = bot.api.get_plugin_partition(self)
+        self._config_cache = {}
+        self._cache_timestamp = 0
         check_reply.fail_msg = 'This thread has been claimed by another user.'
         self.bot.get_command('reply').add_check(check_reply)
         self.bot.get_command('areply').add_check(check_reply)
@@ -22,6 +25,21 @@ class ClaimThread(commands.Cog):
         self.bot.get_command('freply').add_check(check_reply)
 
     async def check_claimer(self, ctx, claimer_id):
+        """
+        Check if a user can claim more threads
+        
+        Parameters
+        ----------
+        ctx : Context
+            The command context
+        claimer_id : int
+            The ID of the user attempting to claim
+            
+        Returns
+        -------
+        bool
+            True if user can claim more threads, False otherwise
+        """
         config = await self.db.find_one({'_id': 'config'})
         if config and 'limit' in config:
             if config['limit'] == 0:
@@ -635,6 +653,22 @@ class ClaimThread(commands.Cog):
             embed.add_field(name="Claim Percentage", value=f"{percentage:.1f}%")
         
         await ctx.send(embed=embed)
+
+    async def get_cached_config(self):
+        """Get cached config or fetch new if expired"""
+        now = time.time()
+        if now - self._cache_timestamp > 300:  # 5 minute cache
+            self._config_cache = await self.get_config()
+            self._cache_timestamp = now
+        return self._config_cache
+
+    async def get_config(self):
+        """Get plugin configuration with defaults"""
+        config = await self.db.find_one({'_id': 'config'}) or {}
+        return {
+            'limit': config.get('limit', 0),
+            'bypass_roles': config.get('bypass_roles', [])
+        }
 
 
 async def check_reply(ctx):
