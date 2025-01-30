@@ -119,12 +119,8 @@ class ClaimThread(commands.Cog):
     @checks.thread_only()
     @commands.group(name='claim', invoke_without_command=True)
     @commands.cooldown(1, 5, commands.BucketType.channel)
-    async def claim_(self, ctx, subscribe: bool = True, rename: bool = False):
-        """Claim a thread
-        
-        Usage: ?claim [subscribe=True] [rename=False]
-        Example: ?claim true true - Claims thread, subscribes, and renames channel
-        Example: ?claim - Claims thread with default settings"""
+    async def claim_(self, ctx):
+        """Claim a thread"""
         
         # Verify channel still exists
         try:
@@ -145,19 +141,19 @@ class ClaimThread(commands.Cog):
             thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
             description = []
             
-            if subscribe:
-                if str(ctx.thread.id) not in self.bot.config["subscriptions"]:
-                    self.bot.config["subscriptions"][str(ctx.thread.id)] = []
-                
-                mentions = self.bot.config["subscriptions"][str(ctx.thread.id)]
-                
-                if ctx.author.mention not in mentions:
-                    mentions.append(ctx.author.mention)
-                    try:
-                        await self.bot.config.update()
-                        description.append("Subscribed to thread.")
-                    except:
-                        description.append("Failed to subscribe to thread.")
+            # Always subscribe
+            if str(ctx.thread.id) not in self.bot.config["subscriptions"]:
+                self.bot.config["subscriptions"][str(ctx.thread.id)] = []
+            
+            mentions = self.bot.config["subscriptions"][str(ctx.thread.id)]
+            
+            if ctx.author.mention not in mentions:
+                mentions.append(ctx.author.mention)
+                try:
+                    await self.bot.config.update()
+                    description.append("Subscribed to thread.")
+                except:
+                    description.append("Failed to subscribe to thread.")
 
             # Check if thread exists and has active claimers
             has_active_claimers = thread and thread.get('claimers') and len(thread['claimers']) > 0
@@ -173,17 +169,16 @@ class ClaimThread(commands.Cog):
                     except:
                         pass
 
-                # Update channel name only if rename is True
-                if rename:
-                    new_name = f"{ctx.author.display_name} claimed"
-                    try:
-                        await ctx.thread.channel.edit(name=new_name)
-                    except discord.Forbidden:
-                        description.append("Failed to rename channel (Missing Permissions)")
-                    except discord.HTTPException:
-                        description.append("Failed to rename channel (Rate Limited)")
-                    except:
-                        description.append("Failed to rename channel")
+                # Always rename channel
+                new_name = f"{ctx.author.display_name} claimed"
+                try:
+                    await ctx.thread.channel.edit(name=new_name)
+                except discord.Forbidden:
+                    description.append("Failed to rename channel (Missing Permissions)")
+                except discord.HTTPException:
+                    description.append("Failed to rename channel (Rate Limited)")
+                except:
+                    description.append("Failed to rename channel")
 
                 try:
                     if thread is None:
