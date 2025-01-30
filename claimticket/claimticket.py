@@ -339,22 +339,21 @@ class ClaimThread(commands.Cog):
         
         # Get all claims for this user
         cursor = self.db.find({'guild': str(self.bot.modmail_guild.id)})
-        current_claims = 0
-        total_claims = 0
-        closed_claims = 0
+        active_claims = []
+        closed_claims = []
         
         async for doc in cursor:
             if 'claimers' in doc and str(target.id) in doc['claimers']:
-                total_claims += 1
-                # Check if channel still exists (active claim)
                 try:
                     channel = ctx.guild.get_channel(int(doc['thread_id'])) or await self.bot.fetch_channel(int(doc['thread_id']))
                     if channel:
-                        current_claims += 1
+                        active_claims.append(doc)
                     else:
-                        closed_claims += 1
+                        closed_claims.append(doc)
                 except (discord.NotFound, discord.Forbidden):
-                    closed_claims += 1
+                    closed_claims.append(doc)
+        
+        total_claims = len(active_claims) + len(closed_claims)
         
         embed = discord.Embed(
             title=f"Claim Statistics for {target.display_name}",
@@ -365,14 +364,14 @@ class ClaimThread(commands.Cog):
         # Current claims
         embed.add_field(
             name="Active Claims",
-            value=str(current_claims),
+            value=str(len(active_claims)),
             inline=True
         )
         
         # Historical claims
         embed.add_field(
             name="Closed Claims",
-            value=str(closed_claims),
+            value=str(len(closed_claims)),
             inline=True
         )
         
@@ -396,22 +395,9 @@ class ClaimThread(commands.Cog):
         
         embed.add_field(
             name="Claims Available", 
-            value=str(limit - current_claims) if limit > 0 else "∞",
+            value=str(limit - len(active_claims)) if limit > 0 else "∞",
             inline=True
         )
-        
-        # Calculate percentage of total server claims
-        total_server_claims = 0
-        async for _ in self.db.find({'guild': str(self.bot.modmail_guild.id)}):
-            total_server_claims += 1
-            
-        if total_server_claims > 0:
-            percentage = (total_claims / total_server_claims) * 100
-            embed.add_field(
-                name="Percentage of Total Server Claims",
-                value=f"{percentage:.1f}%",
-                inline=True
-            )
         
         await ctx.send(embed=embed)
 
@@ -424,21 +410,28 @@ class ClaimThread(commands.Cog):
         Use '?claim leaderboard' to see only active claims"""
         cursor = self.db.find({'guild': str(self.bot.modmail_guild.id)})
         active_claims = {}
-        all_claims = {}
+        closed_claims = {}
         
         async for doc in cursor:
             if 'claimers' in doc:
-                # Track all claims
-                for claimer_id in doc['claimers']:
-                    all_claims[claimer_id] = all_claims.get(claimer_id, 0) + 1
-                    
-                    # Check if claim is still active
-                    try:
-                        channel = ctx.guild.get_channel(int(doc['thread_id'])) or await self.bot.fetch_channel(int(doc['thread_id']))
+                try:
+                    channel = ctx.guild.get_channel(int(doc['thread_id'])) or await self.bot.fetch_channel(int(doc['thread_id']))
+                    for claimer_id in doc['claimers']:
                         if channel:
+                            # Active claim
                             active_claims[claimer_id] = active_claims.get(claimer_id, 0) + 1
-                    except (discord.NotFound, discord.Forbidden):
-                        continue
+                        else:
+                            # Closed claim
+                            closed_claims[claimer_id] = closed_claims.get(claimer_id, 0) + 1
+                except (discord.NotFound, discord.Forbidden):
+                    # Channel doesn't exist anymore - closed claim
+                    for claimer_id in doc['claimers']:
+                        closed_claims[claimer_id] = closed_claims.get(claimer_id, 0) + 1
+        
+        # Calculate total claims for each user
+        all_claims = {}
+        for user_id in set(list(active_claims.keys()) + list(closed_claims.keys())):
+            all_claims[user_id] = active_claims.get(user_id, 0) + closed_claims.get(user_id, 0)
         
         # Use appropriate data based on show_all parameter
         claims_data = all_claims if show_all else active_claims
@@ -455,11 +448,11 @@ class ClaimThread(commands.Cog):
             name = user.display_name if user else f"Unknown User ({user_id})"
             
             if show_all:
-                active_count = active_claims.get(user_id, 0)
-                closed_count = count - active_count
+                active = active_claims.get(user_id, 0)
+                closed = closed_claims.get(user_id, 0)
                 embed.add_field(
                     name=f"#{idx} {name}",
-                    value=f"Total: {count} claims\nActive: {active_count}\nClosed: {closed_count}",
+                    value=f"Total: {count} claims\nActive: {active}\nClosed: {closed}",
                     inline=False
                 )
             else:
