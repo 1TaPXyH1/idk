@@ -45,8 +45,13 @@ class ClaimThread(commands.Cog):
 
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel):
+        """When a thread is deleted, mark it as closed in the database instead of deleting it"""
         if await self.check_before_update(channel):
-            await self.db.delete_one({'thread_id': str(channel.id), 'guild': str(self.bot.modmail_guild.id)})
+            # Instead of deleting, update the status to closed
+            await self.db.find_one_and_update(
+                {'thread_id': str(channel.id), 'guild': str(self.bot.modmail_guild.id)},
+                {'$set': {'status': 'closed'}}
+            )
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @checks.thread_only()
@@ -349,8 +354,20 @@ class ClaimThread(commands.Cog):
                     if channel:
                         active_claims.append(doc)
                     else:
+                        # If channel doesn't exist, mark as closed if not already marked
+                        if 'status' not in doc or doc['status'] != 'closed':
+                            await self.db.find_one_and_update(
+                                {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                                {'$set': {'status': 'closed'}}
+                            )
                         closed_claims.append(doc)
                 except (discord.NotFound, discord.Forbidden):
+                    # If channel doesn't exist, mark as closed if not already marked
+                    if 'status' not in doc or doc['status'] != 'closed':
+                        await self.db.find_one_and_update(
+                            {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                            {'$set': {'status': 'closed'}}
+                        )
                     closed_claims.append(doc)
         
         total_claims = len(active_claims) + len(closed_claims)
@@ -361,21 +378,18 @@ class ClaimThread(commands.Cog):
             timestamp=ctx.message.created_at
         )
         
-        # Current claims
         embed.add_field(
             name="Active Claims",
             value=str(len(active_claims)),
             inline=True
         )
         
-        # Historical claims
         embed.add_field(
             name="Closed Claims",
             value=str(len(closed_claims)),
             inline=True
         )
         
-        # Total claims ever
         embed.add_field(
             name="Total Claims Ever",
             value=str(total_claims),
@@ -420,13 +434,31 @@ class ClaimThread(commands.Cog):
                         if channel:
                             # Active claim
                             active_claims[claimer_id] = active_claims.get(claimer_id, 0) + 1
+                            # Mark as active if not already
+                            if 'status' in doc and doc['status'] == 'closed':
+                                await self.db.find_one_and_update(
+                                    {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                                    {'$unset': {'status': ''}}
+                                )
                         else:
                             # Closed claim
                             closed_claims[claimer_id] = closed_claims.get(claimer_id, 0) + 1
+                            # Mark as closed if not already
+                            if 'status' not in doc or doc['status'] != 'closed':
+                                await self.db.find_one_and_update(
+                                    {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                                    {'$set': {'status': 'closed'}}
+                                )
                 except (discord.NotFound, discord.Forbidden):
                     # Channel doesn't exist anymore - closed claim
                     for claimer_id in doc['claimers']:
                         closed_claims[claimer_id] = closed_claims.get(claimer_id, 0) + 1
+                    # Mark as closed if not already
+                    if 'status' not in doc or doc['status'] != 'closed':
+                        await self.db.find_one_and_update(
+                            {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                            {'$set': {'status': 'closed'}}
+                        )
         
         # Calculate total claims for each user
         all_claims = {}
