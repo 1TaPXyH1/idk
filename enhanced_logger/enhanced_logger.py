@@ -16,27 +16,19 @@ class EnhancedLogger(commands.Cog):
 
     @commands.Cog.listener()
     async def on_thread_ready(self, thread, creator, category, initial_message):
-        """Log new ticket creation"""
+        """Initialize thread tracking"""
         try:
-            if thread and creator:
-                current_time = datetime.utcnow()
-                # Check if ticket already exists
-                existing_ticket = await self.db.find_one({'thread_id': str(thread.id)})
-                if not existing_ticket:
-                    await self.db.insert_one({
-                        'thread_id': str(thread.id),
-                        'channel_id': str(thread.channel.id),
-                        'creator_id': str(creator.id),
-                        'creator_name': str(creator),
-                        'created_at': current_time,
-                        'status': 'open',
-                        'messages': [],
-                        'response_times': [],
-                        'handlers': []
-                    })
-                    print(f"New ticket logged: {thread.id} by {creator}")
+            await self.db.insert_one({
+                'thread_id': str(thread.id),
+                'creator_id': str(creator.id),
+                'creator_name': str(creator),
+                'created_at': datetime.utcnow(),
+                'claimed_by': None,
+                'claim_time': None,
+                'status': 'open'
+            })
         except Exception as e:
-            print(f"Error logging thread creation: {e}")
+            print(f"Error initializing thread: {e}")
 
     @commands.Cog.listener()
     async def on_thread_reply(self, thread, reply, creator, message, anonymous):
@@ -63,32 +55,86 @@ class EnhancedLogger(commands.Cog):
 
     @commands.Cog.listener()
     async def on_thread_close(self, thread, closer, silent, delete_channel, message, time):
-        """Track thread closure"""
+        """Enhanced log message when thread is closed"""
         try:
-            if thread and closer:
-                current_time = datetime.utcnow()
-                thread_data = await self.db.find_one({'thread_id': str(thread.id)})
-                
-                if thread_data:
-                    created_at = thread_data.get('created_at', current_time)
-                    # Calculate resolution time in minutes with decimal precision
-                    delta = current_time - created_at
-                    resolution_time = delta.total_seconds() / 60.0  # Convert to minutes
-                    
-                    await self.db.update_one(
-                        {'thread_id': str(thread.id)},
-                        {'$set': {
-                            'closed_by': str(closer.id),
-                            'closer_name': str(closer),
-                            'closed_at': current_time,
-                            'status': 'closed',
-                            'close_message': str(message) if message else "No message provided",
-                            'resolution_time': resolution_time
-                        }}
+            thread_data = await self.db.find_one({'thread_id': str(thread.id)})
+            if not thread_data:
+                return
+
+            # Get the log message
+            logs = await thread.get_logs()
+            if not logs:
+                return
+
+            log_url = logs.url
+            log_message = None
+
+            # Find the log message in the channel
+            async for msg in thread.channel.history(limit=10):
+                if msg.embeds and "Log" in str(msg.embeds[0].title):
+                    log_message = msg
+                    break
+
+            if log_message:
+                # Create enhanced embed
+                embed = discord.Embed(
+                    title="📝 Enhanced Ticket Log",
+                    color=self.bot.main_color,
+                    timestamp=datetime.utcnow()
+                )
+
+                # Basic ticket info
+                embed.add_field(
+                    name="Ticket Information",
+                    value=f"**Creator:** {thread_data['creator_name']}\n"
+                          f"**Created:** {thread_data['created_at'].strftime('%Y-%m-%d %H:%M:%S')}",
+                    inline=False
+                )
+
+                # Claim information
+                claimed_by = thread_data.get('claimed_by', 'Not Claimed')
+                if claimed_by != 'Not Claimed':
+                    claim_time = thread_data.get('claim_time', datetime.utcnow())
+                    embed.add_field(
+                        name="Claim Information",
+                        value=f"**Claimed By:** {claimed_by}\n"
+                              f"**Claimed At:** {claim_time.strftime('%Y-%m-%d %H:%M:%S')}",
+                        inline=False
                     )
-                    print(f"Ticket {thread.id} closed by {closer} after {resolution_time:.2f} minutes")
+
+                # Closure information
+                embed.add_field(
+                    name="Closure Information",
+                    value=f"**Closed By:** {closer}\n"
+                          f"**Close Reason:** {message if message else 'No reason provided'}",
+                    inline=False
+                )
+
+                # Add log link
+                embed.add_field(
+                    name="Log Link",
+                    value=f"[View Full Log]({log_url})",
+                    inline=False
+                )
+
+                await log_message.reply(embed=embed)
+
         except Exception as e:
-            print(f"Error logging thread closure: {e}")
+            print(f"Error creating enhanced log: {e}")
+
+    @commands.Cog.listener()
+    async def on_thread_claim(self, thread, user):
+        """Track when someone claims a ticket"""
+        try:
+            await self.db.update_one(
+                {'thread_id': str(thread.id)},
+                {'$set': {
+                    'claimed_by': str(user),
+                    'claim_time': datetime.utcnow()
+                }}
+            )
+        except Exception as e:
+            print(f"Error tracking claim: {e}")
 
     def calculate_avg_response_time(self, messages):
         """Calculate average response time between messages"""
