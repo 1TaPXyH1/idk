@@ -148,10 +148,28 @@ class ClaimThread(commands.Cog):
         return count < config['limit']
 
     async def check_before_update(self, channel):
-        if channel.guild != self.bot.modmail_guild or await self.bot.api.get_log(channel.id) is None:
-            return False
+        """Check if the channel/thread is valid for modmail"""
+        try:
+            if isinstance(channel, discord.Thread):
+                # For threads, check the parent channel's guild
+                if not channel.parent:
+                    return False
+                guild = channel.parent.guild
+            else:
+                # For regular channels
+                guild = channel.guild
 
-        return True
+            if guild != self.bot.modmail_guild:
+                return False
+
+            # Check if this is a modmail thread/channel
+            if await self.bot.api.get_log(channel.id) is None:
+                return False
+
+            return True
+            
+        except AttributeError:
+            return False
 
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel):
@@ -213,16 +231,6 @@ class ClaimThread(commands.Cog):
                 description += "Thread is already claimed"
                 embed.description = description
                 await ctx.reply(embed=embed)
-
-            # If this was triggered by button, update the button
-            if isinstance(ctx.message.components, list) and ctx.message.components:
-                view = discord.ui.View.from_message(ctx.message)
-                for child in view.children:
-                    if isinstance(child, ClaimThread.ClaimButton):
-                        child.disabled = True
-                        child.label = f"Claimed by {ctx.author.display_name}"
-                        child.style = discord.ButtonStyle.secondary
-                await ctx.message.edit(view=view)
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @commands.command()
