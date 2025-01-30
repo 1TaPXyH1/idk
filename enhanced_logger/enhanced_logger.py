@@ -60,8 +60,8 @@ class EnhancedLogger(commands.Cog):
     async def on_thread_close(self, thread, closer, silent, delete_channel, message, time):
         """Enhanced log message when thread is closed"""
         try:
-            if not thread or not hasattr(thread, 'channel'):
-                print("No valid thread or channel found")
+            if not thread:
+                print("No valid thread found")
                 return
 
             thread_data = await self.db.find_one({'thread_id': str(thread.id)})
@@ -69,17 +69,21 @@ class EnhancedLogger(commands.Cog):
                 print(f"No thread data found for {thread.id}")
                 return
 
+            # Get the channel from the stored ID
+            channel_id = int(thread_data.get('channel_id'))
+            channel = self.bot.get_channel(channel_id)
+            
+            if not channel:
+                print(f"Could not find channel {channel_id} for thread {thread.id}")
+                return
+
             # Find the log message in the channel
             log_message = None
-            
             try:
-                async for msg in thread.channel.history(limit=10):
+                async for msg in channel.history(limit=10):
                     if msg.embeds and any("Log" in embed.title for embed in msg.embeds):
                         log_message = msg
                         break
-            except discord.NotFound:
-                print(f"Channel not found for thread {thread.id}")
-                return
             except Exception as e:
                 print(f"Error searching channel history: {e}")
                 return
