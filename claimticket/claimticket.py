@@ -40,7 +40,7 @@ class ClaimTicket(commands.Cog):
         self.db = self.bot.plugin_db.get_partition(self)
 
     @commands.Cog.listener()
-    async def on_thread_create(self, thread):
+    async def on_thread_create(self, thread: discord.Thread):
         """Send a message with a 'Claim Ticket' button when a thread is created."""
         embed = discord.Embed(
             title="New Ticket",
@@ -48,7 +48,7 @@ class ClaimTicket(commands.Cog):
             color=discord.Color.blurple()
         )
         view = ClaimButtonView(self.db, thread.id)
-        await thread.send(content=None, embed=embed, view=view)
+        await thread.send(embed=embed, view=view)  # Removed `content=None`
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
     @commands.command()
