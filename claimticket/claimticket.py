@@ -139,7 +139,11 @@ class ClaimThread(commands.Cog):
                     description += "Subscribed to thread.\n"
 
             embed = discord.Embed(color=self.bot.main_color)
-            if thread is None or not thread.get('claimers'):
+            
+            # Check if thread exists and has active claimers
+            has_active_claimers = thread and thread.get('claimers') and len(thread['claimers']) > 0
+            
+            if not has_active_claimers:
                 # Remove closed status if it exists
                 if thread and thread.get('status') == 'closed':
                     await self.db.find_one_and_update(
@@ -163,9 +167,13 @@ class ClaimThread(commands.Cog):
                         'claimers': [str(ctx.author.id)]
                     })
                 else:
+                    # Reset claimers array and add new claimer
                     await self.db.find_one_and_update(
                         {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)},
-                        {'$addToSet': {'claimers': str(ctx.author.id)}}
+                        {
+                            '$set': {'claimers': [str(ctx.author.id)]},
+                            '$unset': {'status': ''}
+                        }
                     )
                 
                 description += "Please respond to the case asap."
