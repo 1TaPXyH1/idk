@@ -567,38 +567,6 @@ class ClaimThread(commands.Cog):
         
         await ctx.send(embed=embed)
 
-    @checks.has_permissions(PermissionLevel.SUPPORTER)
-    @commands.command()
-    async def claimhistory(self, ctx, member: discord.Member = None):
-        """View claim history for yourself or another member
-        
-        Usage: ?claimhistory [member]
-        Example: ?claimhistory @ModeratorBob"""
-        target = member or ctx.author
-        
-        cursor = self.db.find({'guild': str(self.bot.modmail_guild.id)})
-        claims = []
-        
-        async for doc in cursor:
-            if 'claimers' in doc and str(target.id) in doc['claimers']:
-                channel = ctx.guild.get_channel(int(doc['thread_id']))
-                if channel:
-                    claims.append(channel)
-        
-        embed = discord.Embed(
-            title=f"Claim History for {target.display_name}",
-            color=self.bot.main_color,
-            timestamp=ctx.message.created_at
-        )
-        
-        if claims:
-            claim_list = "\n".join([f"• {channel.name} ({channel.mention})" for channel in claims[-10:]])
-            embed.description = f"**Last 10 Claims:**\n{claim_list}"
-        else:
-            embed.description = "No active claims found."
-            
-        embed.set_footer(text=f"Total Active Claims: {len(claims)}")
-        await ctx.send(embed=embed)
 
 async def check_reply(ctx):
     thread = await ctx.bot.get_cog('ClaimThread').db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(ctx.bot.modmail_guild.id)})
