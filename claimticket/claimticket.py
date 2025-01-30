@@ -77,13 +77,20 @@ class ClaimThread(commands.Cog):
                 await self.bot.config.update()
 
             embed = discord.Embed(color=self.bot.main_color)
-            if thread is None:
-                await self.db.insert_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id), 'claimers': [str(ctx.author.id)]})
-                description += "Please respond to the case asap."
-                embed.description = description
-                await ctx.reply(embed=embed)
-            elif thread and len(thread['claimers']) == 0:
-                await self.db.find_one_and_update({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)}, {'$addToSet': {'claimers': str(ctx.author.id)}})
+            if thread is None or (thread and len(thread['claimers']) == 0):
+                new_name = f"{ctx.author.display_name} claimed"
+                try:
+                    await ctx.thread.channel.edit(name=new_name)
+                except discord.Forbidden:
+                    description += "\nFailed to rename channel (Missing Permissions)"
+                except discord.HTTPException:
+                    description += "\nFailed to rename channel"
+
+                if thread is None:
+                    await self.db.insert_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id), 'claimers': [str(ctx.author.id)]})
+                else:
+                    await self.db.find_one_and_update({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)}, {'$addToSet': {'claimers': str(ctx.author.id)}})
+                
                 description += "Please respond to the case asap."
                 embed.description = description
                 await ctx.reply(embed=embed)
@@ -141,6 +148,15 @@ class ClaimThread(commands.Cog):
         if thread and str(ctx.author.id) in thread['claimers']:
             await self.db.find_one_and_update({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)}, {'$pull': {'claimers': str(ctx.author.id)}})
             description += 'Removed from claimers.\n'
+            
+            recipient_id = match_user_id(ctx.thread.channel.topic)
+            recipient = self.bot.get_user(recipient_id) or await self.bot.fetch_user(recipient_id)
+            try:
+                await ctx.thread.channel.edit(name=recipient.name)
+            except discord.Forbidden:
+                description += "\nFailed to rename channel (Missing Permissions)"
+            except discord.HTTPException:
+                description += "\nFailed to rename channel"
 
         if str(ctx.thread.id) not in self.bot.config["subscriptions"]:
             self.bot.config["subscriptions"][str(ctx.thread.id)] = []
