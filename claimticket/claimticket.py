@@ -120,69 +120,97 @@ class ClaimThread(commands.Cog):
     @commands.group(name='claim', invoke_without_command=True)
     async def claim_(self, ctx, subscribe: bool = True):
         """Claim a thread"""
-        if not ctx.invoked_subcommand:
-            if not await self.check_claimer(ctx, ctx.author.id):
-                return await ctx.reply(f"Limit reached, can't claim the thread.")
+        try:
+            if not ctx.invoked_subcommand:
+                if not await self.check_claimer(ctx, ctx.author.id):
+                    return await ctx.send(f"Limit reached, can't claim the thread.")
 
-            thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
-            description = ""
-            
-            if subscribe:
-                if str(ctx.thread.id) not in self.bot.config["subscriptions"]:
-                    self.bot.config["subscriptions"][str(ctx.thread.id)] = []
+                thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
+                description = ""
                 
-                mentions = self.bot.config["subscriptions"][str(ctx.thread.id)]
+                if subscribe:
+                    if str(ctx.thread.id) not in self.bot.config["subscriptions"]:
+                        self.bot.config["subscriptions"][str(ctx.thread.id)] = []
+                    
+                    mentions = self.bot.config["subscriptions"][str(ctx.thread.id)]
+                    
+                    if ctx.author.mention not in mentions:
+                        mentions.append(ctx.author.mention)
+                        try:
+                            await self.bot.config.update()
+                            description += "Subscribed to thread.\n"
+                        except Exception:
+                            description += "Failed to subscribe to thread.\n"
+
+                embed = discord.Embed(color=self.bot.main_color)
                 
-                if ctx.author.mention not in mentions:
-                    mentions.append(ctx.author.mention)
-                    await self.bot.config.update()
-                    description += "Subscribed to thread.\n"
+                # Check if thread exists and has active claimers
+                has_active_claimers = thread and thread.get('claimers') and len(thread['claimers']) > 0
+                
+                if not has_active_claimers:
+                    # Remove closed status if it exists
+                    if thread and thread.get('status') == 'closed':
+                        await self.db.find_one_and_update(
+                            {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)},
+                            {'$unset': {'status': ''}}
+                        )
 
-            embed = discord.Embed(color=self.bot.main_color)
-            
-            # Check if thread exists and has active claimers
-            has_active_claimers = thread and thread.get('claimers') and len(thread['claimers']) > 0
-            
-            if not has_active_claimers:
-                # Remove closed status if it exists
-                if thread and thread.get('status') == 'closed':
-                    await self.db.find_one_and_update(
-                        {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)},
-                        {'$unset': {'status': ''}}
-                    )
+                    # Update channel name
+                    new_name = f"{ctx.author.display_name} claimed"
+                    try:
+                        await ctx.thread.channel.edit(name=new_name)
+                    except discord.Forbidden:
+                        description += "\nFailed to rename channel (Missing Permissions)"
+                    except discord.HTTPException:
+                        description += "\nFailed to rename channel"
+                    except Exception:
+                        description += "\nFailed to rename channel (Unknown error)"
 
-                # Update channel name
-                new_name = f"{ctx.author.display_name} claimed"
-                try:
-                    await ctx.thread.channel.edit(name=new_name)
-                except discord.Forbidden:
-                    description += "\nFailed to rename channel (Missing Permissions)"
-                except discord.HTTPException:
-                    description += "\nFailed to rename channel"
-
-                if thread is None:
-                    await self.db.insert_one({
-                        'thread_id': str(ctx.thread.channel.id), 
-                        'guild': str(self.bot.modmail_guild.id), 
-                        'claimers': [str(ctx.author.id)]
-                    })
+                    try:
+                        if thread is None:
+                            await self.db.insert_one({
+                                'thread_id': str(ctx.thread.channel.id), 
+                                'guild': str(self.bot.modmail_guild.id), 
+                                'claimers': [str(ctx.author.id)]
+                            })
+                        else:
+                            # Reset claimers array and add new claimer
+                            await self.db.find_one_and_update(
+                                {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)},
+                                {
+                                    '$set': {'claimers': [str(ctx.author.id)]},
+                                    '$unset': {'status': ''}
+                                }
+                            )
+                        
+                        description += "Please respond to the case asap."
+                    except Exception as e:
+                        description += f"\nFailed to update database: {str(e)}"
+                    
+                    embed.description = description
+                    try:
+                        await ctx.send(embed=embed)
+                    except discord.NotFound:
+                        # If channel is deleted during command execution
+                        pass
                 else:
-                    # Reset claimers array and add new claimer
-                    await self.db.find_one_and_update(
-                        {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)},
-                        {
-                            '$set': {'claimers': [str(ctx.author.id)]},
-                            '$unset': {'status': ''}
-                        }
-                    )
-                
-                description += "Please respond to the case asap."
-                embed.description = description
-                await ctx.reply(embed=embed)
-            else:
-                description += "Thread is already claimed"
-                embed.description = description
-                await ctx.reply(embed=embed)
+                    description += "Thread is already claimed"
+                    embed.description = description
+                    try:
+                        await ctx.send(embed=embed)
+                    except discord.NotFound:
+                        # If channel is deleted during command execution
+                        pass
+        except discord.NotFound:
+            # Channel was deleted or not found
+            pass
+        except Exception as e:
+            # Log any other unexpected errors
+            print(f"Error in claim command: {str(e)}")
+            try:
+                await ctx.send("An error occurred while processing the command.")
+            except discord.NotFound:
+                pass
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @commands.command()
