@@ -18,15 +18,17 @@ class EnhancedLogger(commands.Cog):
     async def on_thread_ready(self, thread, creator, category, initial_message):
         """Initialize thread tracking"""
         try:
-            await self.db.insert_one({
-                'thread_id': str(thread.id),
-                'creator_id': str(creator.id),
-                'creator_name': str(creator),
-                'created_at': datetime.utcnow(),
-                'claimed_by': None,
-                'claim_time': None,
-                'status': 'open'
-            })
+            if thread and hasattr(thread, 'id'):
+                await self.db.insert_one({
+                    'thread_id': str(thread.id),
+                    'creator_id': str(creator.id),
+                    'creator_name': str(creator),
+                    'created_at': datetime.utcnow(),
+                    'claimed_by': None,
+                    'claim_time': None,
+                    'status': 'open'
+                })
+                print(f"New ticket created by {creator}")
         except Exception as e:
             print(f"Error initializing thread: {e}")
 
@@ -61,18 +63,22 @@ class EnhancedLogger(commands.Cog):
             if not thread_data:
                 return
 
-            # Get the log message
-            logs = await thread.get_logs()
-            if not logs:
-                return
-
-            log_url = logs.url
-            log_message = None
-
             # Find the log message in the channel
-            async for msg in thread.channel.history(limit=10):
-                if msg.embeds and "Log" in str(msg.embeds[0].title):
-                    log_message = msg
+            log_message = None
+            log_url = None
+            
+            async for msg in thread.channel.history(limit=50):
+                if msg.embeds:
+                    for embed in msg.embeds:
+                        if embed.title and "Log" in embed.title:
+                            log_message = msg
+                            # Extract log URL from the embed
+                            for field in embed.fields:
+                                if "Logs" in field.name:
+                                    log_url = field.value
+                                    break
+                            break
+                if log_message:
                     break
 
             if log_message:
@@ -103,21 +109,24 @@ class EnhancedLogger(commands.Cog):
                     )
 
                 # Closure information
+                close_reason = message if message else 'No reason provided'
                 embed.add_field(
                     name="Closure Information",
                     value=f"**Closed By:** {closer}\n"
-                          f"**Close Reason:** {message if message else 'No reason provided'}",
+                          f"**Close Reason:** {close_reason}",
                     inline=False
                 )
 
-                # Add log link
-                embed.add_field(
-                    name="Log Link",
-                    value=f"[View Full Log]({log_url})",
-                    inline=False
-                )
+                # Add log link if found
+                if log_url:
+                    embed.add_field(
+                        name="Log Link",
+                        value=f"[View Full Log]({log_url})",
+                        inline=False
+                    )
 
                 await log_message.reply(embed=embed)
+                print(f"Enhanced log created for ticket {thread.id}")
 
         except Exception as e:
             print(f"Error creating enhanced log: {e}")
@@ -126,13 +135,15 @@ class EnhancedLogger(commands.Cog):
     async def on_thread_claim(self, thread, user):
         """Track when someone claims a ticket"""
         try:
-            await self.db.update_one(
-                {'thread_id': str(thread.id)},
-                {'$set': {
-                    'claimed_by': str(user),
-                    'claim_time': datetime.utcnow()
-                }}
-            )
+            if thread and user:
+                await self.db.update_one(
+                    {'thread_id': str(thread.id)},
+                    {'$set': {
+                        'claimed_by': str(user),
+                        'claim_time': datetime.utcnow()
+                    }}
+                )
+                print(f"Ticket {thread.id} claimed by {user}")
         except Exception as e:
             print(f"Error tracking claim: {e}")
 
