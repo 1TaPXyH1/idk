@@ -628,29 +628,28 @@ class ClaimThread(commands.Cog):
         cursor = self.db.find({'guild': str(self.bot.modmail_guild.id)})
         
         total_threads = 0
-        claimed_threads = 0
-        unique_claimers = set()
+        active_threads = 0
+        closed_threads = 0
         
         async for doc in cursor:
             total_threads += 1
-            if 'claimers' in doc and doc['claimers']:
-                claimed_threads += 1
-                unique_claimers.update(doc['claimers'])
+            if 'status' in doc and doc['status'] == 'closed':
+                closed_threads += 1
+            else:
+                active_threads += 1
         
         embed = discord.Embed(
             title="Claim System Overview",
             color=self.bot.main_color
         )
         
-        embed.add_field(name="Total Active Threads", value=str(total_threads))
-        embed.add_field(name="Claimed Threads", value=str(claimed_threads))
-        embed.add_field(name="Unclaimed Threads", value=str(total_threads - claimed_threads))
-        embed.add_field(name="Active Claimers", value=str(len(unique_claimers)))
+        embed.add_field(name="Total Claims", value=str(total_threads), inline=True)
+        embed.add_field(name="Active Claims", value=str(active_threads), inline=True)
+        embed.add_field(name="Closed Claims", value=str(closed_threads), inline=True)
         
-        # Calculate percentage of claimed threads
         if total_threads > 0:
-            percentage = (claimed_threads / total_threads) * 100
-            embed.add_field(name="Claim Percentage", value=f"{percentage:.1f}%")
+            closure_percentage = (closed_threads / total_threads) * 100
+            embed.add_field(name="Closure Percentage", value=f"{closure_percentage:.1f}%", inline=True)
         
         await ctx.send(embed=embed)
 
