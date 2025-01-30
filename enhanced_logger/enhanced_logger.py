@@ -18,16 +18,17 @@ class EnhancedLogger(commands.Cog):
     async def on_thread_ready(self, thread, creator, category, initial_message):
         """Log new ticket creation"""
         try:
-            await self.db.insert_one({
-                'thread_id': str(thread.id),
-                'creator_id': str(creator.id),
-                'creator_name': str(creator),
-                'created_at': datetime.utcnow(),
-                'status': 'open',
-                'messages': [],
-                'response_times': [],
-                'handlers': []
-            })
+            if thread and creator:
+                await self.db.insert_one({
+                    'thread_id': str(thread.id),
+                    'creator_id': str(creator.id),
+                    'creator_name': str(creator),
+                    'created_at': datetime.utcnow(),
+                    'status': 'open',
+                    'messages': [],
+                    'response_times': [],
+                    'handlers': []
+                })
         except Exception as e:
             print(f"Error logging thread creation: {e}")
 
@@ -35,36 +36,38 @@ class EnhancedLogger(commands.Cog):
     async def on_thread_reply(self, thread, reply, creator, message, anonymous):
         """Track message exchanges and response times"""
         try:
-            await self.db.update_one(
-                {'thread_id': str(thread.id)},
-                {'$push': {
-                    'messages': {
-                        'author_id': str(creator.id),
-                        'author_name': str(creator),
-                        'content': message.content,
-                        'timestamp': message.created_at,
-                        'is_staff': not isinstance(creator, discord.User)  # True if not a regular user
-                    }
-                }}
-            )
+            if message and hasattr(message, 'content'):
+                await self.db.update_one(
+                    {'thread_id': str(thread.id)},
+                    {'$push': {
+                        'messages': {
+                            'author_id': str(creator.id),
+                            'author_name': str(creator),
+                            'content': message.content,
+                            'timestamp': datetime.utcnow(),
+                            'is_staff': not isinstance(creator, discord.User)
+                        }
+                    }}
+                )
         except Exception as e:
             print(f"Error logging message: {e}")
 
     @commands.Cog.listener()
-    async def on_thread_close(self, thread, closer, silent, delete_channel, message):
+    async def on_thread_close(self, thread, closer, silent, delete_channel, message, time):
         """Track thread closure"""
         try:
-            await self.db.update_one(
-                {'thread_id': str(thread.id)},
-                {'$set': {
-                    'closed_by': str(closer.id),
-                    'closer_name': str(closer),
-                    'closed_at': datetime.utcnow(),
-                    'status': 'closed',
-                    'close_message': message if message else "No message provided",
-                    'resolution_time': (datetime.utcnow() - thread.created_at).total_seconds() / 60
-                }}
-            )
+            if thread and closer:
+                await self.db.update_one(
+                    {'thread_id': str(thread.id)},
+                    {'$set': {
+                        'closed_by': str(closer.id),
+                        'closer_name': str(closer),
+                        'closed_at': datetime.utcnow(),
+                        'status': 'closed',
+                        'close_message': str(message) if message else "No message provided",
+                        'resolution_time': (datetime.utcnow() - thread.created_at).total_seconds() / 60
+                    }}
+                )
         except Exception as e:
             print(f"Error logging thread closure: {e}")
 
