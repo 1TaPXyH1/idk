@@ -31,9 +31,18 @@ class ClaimThread(commands.Cog):
 
         cursor = self.db.find({'guild':str(self.bot.modmail_guild.id)})
         count = 0
-        async for x in cursor:
-            if 'claimers' in x and str(claimer_id) in x['claimers']:
-                count += 1
+        async for doc in cursor:
+            if 'claimers' in doc and str(claimer_id) in doc['claimers']:
+                if 'status' not in doc or doc['status'] != 'closed':
+                    try:
+                        channel = ctx.guild.get_channel(int(doc['thread_id'])) or await self.bot.fetch_channel(int(doc['thread_id']))
+                        if channel:
+                            count += 1
+                    except discord.NotFound:
+                        await self.db.find_one_and_update(
+                            {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                            {'$set': {'status': 'closed'}}
+                        )
 
         return count < config['limit']
 
@@ -47,7 +56,6 @@ class ClaimThread(commands.Cog):
     async def on_guild_channel_delete(self, channel):
         """When a thread is deleted, mark it as closed in the database instead of deleting it"""
         if await self.check_before_update(channel):
-            # Instead of deleting, update the status to closed
             await self.db.find_one_and_update(
                 {'thread_id': str(channel.id), 'guild': str(self.bot.modmail_guild.id)},
                 {'$set': {'status': 'closed'}}
@@ -107,39 +115,57 @@ class ClaimThread(commands.Cog):
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @commands.command()
     async def claims(self, ctx):
-        """Check which channels you have clamined"""
+        """Check which channels you have claimed"""
         cursor = self.db.find({'guild':str(self.bot.modmail_guild.id)})
-        channels = []
-        async for x in cursor:
-            if 'claimers' in x and str(ctx.author.id) in x['claimers']:
-                try:
-                    channel = ctx.guild.get_channel(int(x['thread_id'])) or await self.bot.fetch_channel(int(x['thread_id']))
-                except discord.NotFound:
-                    channel = None
-                    await self.db.delete_one({'thread_id': x['thread_id'], 'guild': x['guild']})
-
-                if channel and channel not in channels:
-                    channels.append(channel)
+        active_channels = []
+        
+        async for doc in cursor:
+            if 'claimers' in doc and str(ctx.author.id) in doc['claimers']:
+                if 'status' not in doc or doc['status'] != 'closed':
+                    try:
+                        channel = ctx.guild.get_channel(int(doc['thread_id'])) or await self.bot.fetch_channel(int(doc['thread_id']))
+                        if channel:
+                            active_channels.append(channel)
+                        else:
+                            await self.db.find_one_and_update(
+                                {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                                {'$set': {'status': 'closed'}}
+                            )
+                    except discord.NotFound:
+                        await self.db.find_one_and_update(
+                            {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                            {'$set': {'status': 'closed'}}
+                        )
 
         embed = discord.Embed(title='Your claimed tickets:', color=self.bot.main_color)
-        embed.description = ', '.join(ch.mention for ch in channels)
+        embed.description = ', '.join(ch.mention for ch in active_channels) if active_channels else "No active claims"
         await ctx.send(embed=embed)
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @claim_.command()
     async def cleanup(self, ctx):
-        """Cleans up the database for deleted tickets"""
+        """Cleans up the database by marking deleted tickets as closed"""
         cursor = self.db.find({'guild':str(self.bot.modmail_guild.id)})
         count = 0
-        async for x in cursor:
-            try:
-                channel = ctx.guild.get_channel(int(x['thread_id'])) or await self.bot.fetch_channel(int(x['thread_id']))
-            except discord.NotFound:
-                await self.db.delete_one({'thread_id': x['thread_id'], 'guild': x['guild']})
-                count += 1
+        async for doc in cursor:
+            if 'status' not in doc or doc['status'] != 'closed':
+                try:
+                    channel = ctx.guild.get_channel(int(doc['thread_id'])) or await self.bot.fetch_channel(int(doc['thread_id']))
+                    if not channel:
+                        await self.db.find_one_and_update(
+                            {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                            {'$set': {'status': 'closed'}}
+                        )
+                        count += 1
+                except discord.NotFound:
+                    await self.db.find_one_and_update(
+                        {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                        {'$set': {'status': 'closed'}}
+                    )
+                    count += 1
 
         embed = discord.Embed(color=self.bot.main_color)
-        embed.description = f"Cleaned up {count} closed tickets records"
+        embed.description = f"Marked {count} deleted tickets as closed"
         await ctx.send(embed=embed)
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
@@ -151,8 +177,19 @@ class ClaimThread(commands.Cog):
         description = ""
         thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
         if thread and str(ctx.author.id) in thread['claimers']:
-            await self.db.find_one_and_update({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)}, {'$pull': {'claimers': str(ctx.author.id)}})
+            await self.db.find_one_and_update(
+                {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)}, 
+                {'$pull': {'claimers': str(ctx.author.id)}}
+            )
             description += 'Removed from claimers.\n'
+            
+            # If no more claimers, mark as closed
+            updated_thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
+            if not updated_thread['claimers']:
+                await self.db.find_one_and_update(
+                    {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)},
+                    {'$set': {'status': 'closed'}}
+                )
             
             recipient_id = match_user_id(ctx.thread.channel.topic)
             recipient = self.bot.get_user(recipient_id) or await self.bot.fetch_user(recipient_id)
