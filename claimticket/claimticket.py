@@ -753,6 +753,7 @@ class ClaimThread(commands.Cog):
 
     @commands.command()
     @checks.thread_only()
+    @commands.cooldown(1, 5, commands.BucketType.channel)  # One use per 5 seconds per channel
     async def rename(self, ctx, *, new_name: str):
         """Rename the current thread"""
         try:
@@ -760,6 +761,11 @@ class ClaimThread(commands.Cog):
             await ctx.message.add_reaction('✅')
         except (discord.Forbidden, discord.HTTPException, Exception):
             await ctx.message.add_reaction('❌')
+
+    @rename.error
+    async def rename_error(self, ctx, error):
+        if isinstance(error, commands.CommandOnCooldown):
+            await ctx.message.add_reaction('⏳')
 
     @commands.command()
     @checks.thread_only()
