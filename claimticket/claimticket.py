@@ -753,19 +753,27 @@ class ClaimThread(commands.Cog):
 
     @commands.command()
     @checks.thread_only()
-    @commands.cooldown(1, 5, commands.BucketType.channel)  # One use per 5 seconds per channel
+    @commands.cooldown(1, 30, commands.BucketType.channel)  # One use per 30 seconds per channel
     async def rename(self, ctx, *, new_name: str):
         """Rename the current thread"""
         try:
             await ctx.thread.channel.edit(name=new_name)
             await ctx.message.add_reaction('✅')
-        except (discord.Forbidden, discord.HTTPException, Exception):
+        except discord.HTTPException as e:
+            if e.code == 429:  # Rate limit error
+                await ctx.message.add_reaction('⏳')
+                return
+            await ctx.message.add_reaction('❌')
+        except Exception:
             await ctx.message.add_reaction('❌')
 
     @rename.error
     async def rename_error(self, ctx, error):
         if isinstance(error, commands.CommandOnCooldown):
-            await ctx.message.add_reaction('⏳')
+            try:
+                await ctx.message.add_reaction('⏳')
+            except:
+                pass
 
     @commands.command()
     @checks.thread_only()
