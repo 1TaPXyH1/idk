@@ -48,7 +48,8 @@ class ClaimTicket(commands.Cog):
             color=discord.Color.blurple()
         )
         view = ClaimButtonView(self.db, thread.id)
-        await thread.send(embed=embed, view=view)  # Removed `content=None`
+        # Use the text channel's send method instead of the thread's send method
+        await thread.parent.send(embed=embed, view=view)
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
     @commands.command()
