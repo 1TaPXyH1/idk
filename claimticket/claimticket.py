@@ -462,7 +462,7 @@ class ClaimThread(commands.Cog):
         await ctx.invoke(self.bot.get_command('reply'), msg=msg)
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
-    @claim_.command(name="stats")
+    @commands.command(name="stats")
     async def claim_stats(self, ctx, member: discord.Member = None):
         """View comprehensive claim statistics for yourself or another member
         
@@ -481,7 +481,6 @@ class ClaimThread(commands.Cog):
                     if channel:
                         active_claims.append(doc)
                     else:
-                        # If channel doesn't exist, mark as closed if not already marked
                         if 'status' not in doc or doc['status'] != 'closed':
                             await self.db.find_one_and_update(
                                 {'thread_id': doc['thread_id'], 'guild': doc['guild']},
@@ -489,7 +488,6 @@ class ClaimThread(commands.Cog):
                             )
                         closed_claims.append(doc)
                 except (discord.NotFound, discord.Forbidden):
-                    # If channel doesn't exist, mark as closed if not already marked
                     if 'status' not in doc or doc['status'] != 'closed':
                         await self.db.find_one_and_update(
                             {'thread_id': doc['thread_id'], 'guild': doc['guild']},
@@ -542,13 +540,10 @@ class ClaimThread(commands.Cog):
         
         await ctx.send(embed=embed)
 
-    @checks.has_permissions(PermissionLevel.MODERATOR)
-    @claim_.command(name="leaderboard", aliases=["lb"])
-    async def claim_leaderboard(self, ctx, show_all: bool = False):
-        """View the top 10 supporters by claims
-        
-        Use '?claim leaderboard true' to see all-time stats including closed claims
-        Use '?claim leaderboard' to see only active claims"""
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    @commands.command(name="lb")
+    async def claim_leaderboard(self, ctx):
+        """View the top 10 supporters by all-time claims including closed claims"""
         cursor = self.db.find({'guild': str(self.bot.modmail_guild.id)})
         active_claims = {}
         closed_claims = {}
@@ -559,28 +554,22 @@ class ClaimThread(commands.Cog):
                     channel = ctx.guild.get_channel(int(doc['thread_id'])) or await self.bot.fetch_channel(int(doc['thread_id']))
                     for claimer_id in doc['claimers']:
                         if channel:
-                            # Active claim
                             active_claims[claimer_id] = active_claims.get(claimer_id, 0) + 1
-                            # Mark as active if not already
                             if 'status' in doc and doc['status'] == 'closed':
                                 await self.db.find_one_and_update(
                                     {'thread_id': doc['thread_id'], 'guild': doc['guild']},
                                     {'$unset': {'status': ''}}
                                 )
                         else:
-                            # Closed claim
                             closed_claims[claimer_id] = closed_claims.get(claimer_id, 0) + 1
-                            # Mark as closed if not already
                             if 'status' not in doc or doc['status'] != 'closed':
                                 await self.db.find_one_and_update(
                                     {'thread_id': doc['thread_id'], 'guild': doc['guild']},
                                     {'$set': {'status': 'closed'}}
                                 )
                 except (discord.NotFound, discord.Forbidden):
-                    # Channel doesn't exist anymore - closed claim
                     for claimer_id in doc['claimers']:
                         closed_claims[claimer_id] = closed_claims.get(claimer_id, 0) + 1
-                    # Mark as closed if not already
                     if 'status' not in doc or doc['status'] != 'closed':
                         await self.db.find_one_and_update(
                             {'thread_id': doc['thread_id'], 'guild': doc['guild']},
@@ -592,12 +581,10 @@ class ClaimThread(commands.Cog):
         for user_id in set(list(active_claims.keys()) + list(closed_claims.keys())):
             all_claims[user_id] = active_claims.get(user_id, 0) + closed_claims.get(user_id, 0)
         
-        # Use appropriate data based on show_all parameter
-        claims_data = all_claims if show_all else active_claims
-        sorted_claims = sorted(claims_data.items(), key=lambda x: x[1], reverse=True)[:10]
+        sorted_claims = sorted(all_claims.items(), key=lambda x: x[1], reverse=True)[:10]
         
         embed = discord.Embed(
-            title=f"Top Claimers - {'All Time' if show_all else 'Active Claims'}",
+            title="Top Claimers - All Time Stats",
             color=self.bot.main_color,
             timestamp=ctx.message.created_at
         )
@@ -606,22 +593,14 @@ class ClaimThread(commands.Cog):
             user = ctx.guild.get_member(int(user_id))
             name = user.display_name if user else f"Unknown User ({user_id})"
             
-            if show_all:
-                active = active_claims.get(user_id, 0)
-                closed = closed_claims.get(user_id, 0)
-                embed.add_field(
-                    name=f"#{idx} {name}",
-                    value=f"Total: {count} claims\nActive: {active}\nClosed: {closed}",
-                    inline=False
-                )
-            else:
-                embed.add_field(
-                    name=f"#{idx} {name}",
-                    value=f"{count} active claims",
-                    inline=False
-                )
+            active = active_claims.get(user_id, 0)
+            closed = closed_claims.get(user_id, 0)
+            embed.add_field(
+                name=f"#{idx} {name}",
+                value=f"Total: {count} claims\nActive: {active}\nClosed: {closed}",
+                inline=False
+            )
             
-        embed.set_footer(text="Use '?claim leaderboard true' to see all-time stats")
         await ctx.send(embed=embed)
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
