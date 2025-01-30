@@ -329,6 +329,137 @@ class ClaimThread(commands.Cog):
         """Allow mods to bypass claim thread check in reply"""
         await ctx.invoke(self.bot.get_command('reply'), msg=msg)
 
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    @claim_.command(name="stats")
+    async def claim_stats(self, ctx, member: discord.Member = None):
+        """View claim statistics for yourself or another member"""
+        target = member or ctx.author
+        
+        # Get all claims for this user
+        cursor = self.db.find({'guild': str(self.bot.modmail_guild.id)})
+        current_claims = 0
+        total_claims = 0
+        
+        async for doc in cursor:
+            if 'claimers' in doc:
+                if str(target.id) in doc['claimers']:
+                    current_claims += 1
+                    total_claims += 1
+        
+        embed = discord.Embed(
+            title=f"Claim Statistics for {target.display_name}",
+            color=self.bot.main_color
+        )
+        embed.add_field(name="Current Active Claims", value=str(current_claims))
+        
+        # Get claim limit
+        config = await self.db.find_one({'_id': 'config'})
+        limit = config.get('limit', 0) if config else 0
+        limit_text = str(limit) if limit > 0 else "No limit"
+        
+        embed.add_field(name="Claim Limit", value=limit_text)
+        embed.add_field(name="Claims Available", 
+                       value=str(limit - current_claims) if limit > 0 else "∞")
+        
+        await ctx.send(embed=embed)
+
+    @checks.has_permissions(PermissionLevel.MODERATOR)
+    @claim_.command(name="leaderboard", aliases=["lb"])
+    async def claim_leaderboard(self, ctx):
+        """View the top 10 supporters by active claims"""
+        cursor = self.db.find({'guild': str(self.bot.modmail_guild.id)})
+        claims_count = {}
+        
+        async for doc in cursor:
+            if 'claimers' in doc:
+                for claimer_id in doc['claimers']:
+                    claims_count[claimer_id] = claims_count.get(claimer_id, 0) + 1
+        
+        # Sort by number of claims
+        sorted_claims = sorted(claims_count.items(), key=lambda x: x[1], reverse=True)[:10]
+        
+        embed = discord.Embed(
+            title="Top Claimers",
+            color=self.bot.main_color
+        )
+        
+        for idx, (user_id, count) in enumerate(sorted_claims, 1):
+            user = ctx.guild.get_member(int(user_id))
+            name = user.display_name if user else f"Unknown User ({user_id})"
+            embed.add_field(
+                name=f"#{idx} {name}",
+                value=f"{count} active claims",
+                inline=False
+            )
+            
+        await ctx.send(embed=embed)
+
+    @checks.has_permissions(PermissionLevel.MODERATOR)
+    @claim_.command(name="overview")
+    async def claim_overview(self, ctx):
+        """View overall claim statistics"""
+        cursor = self.db.find({'guild': str(self.bot.modmail_guild.id)})
+        
+        total_threads = 0
+        claimed_threads = 0
+        unique_claimers = set()
+        
+        async for doc in cursor:
+            total_threads += 1
+            if 'claimers' in doc and doc['claimers']:
+                claimed_threads += 1
+                unique_claimers.update(doc['claimers'])
+        
+        embed = discord.Embed(
+            title="Claim System Overview",
+            color=self.bot.main_color
+        )
+        
+        embed.add_field(name="Total Active Threads", value=str(total_threads))
+        embed.add_field(name="Claimed Threads", value=str(claimed_threads))
+        embed.add_field(name="Unclaimed Threads", value=str(total_threads - claimed_threads))
+        embed.add_field(name="Active Claimers", value=str(len(unique_claimers)))
+        
+        # Calculate percentage of claimed threads
+        if total_threads > 0:
+            percentage = (claimed_threads / total_threads) * 100
+            embed.add_field(name="Claim Percentage", value=f"{percentage:.1f}%")
+        
+        await ctx.send(embed=embed)
+
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    @commands.command()
+    async def claimhistory(self, ctx, member: discord.Member = None):
+        """View claim history for yourself or another member
+        
+        Usage: ?claimhistory [member]
+        Example: ?claimhistory @ModeratorBob"""
+        target = member or ctx.author
+        
+        cursor = self.db.find({'guild': str(self.bot.modmail_guild.id)})
+        claims = []
+        
+        async for doc in cursor:
+            if 'claimers' in doc and str(target.id) in doc['claimers']:
+                channel = ctx.guild.get_channel(int(doc['thread_id']))
+                if channel:
+                    claims.append(channel)
+        
+        embed = discord.Embed(
+            title=f"Claim History for {target.display_name}",
+            color=self.bot.main_color,
+            timestamp=ctx.message.created_at
+        )
+        
+        if claims:
+            claim_list = "\n".join([f"• {channel.name} ({channel.mention})" for channel in claims[-10:]])
+            embed.description = f"**Last 10 Claims:**\n{claim_list}"
+        else:
+            embed.description = "No active claims found."
+            
+        embed.set_footer(text=f"Total Active Claims: {len(claims)}")
+        await ctx.send(embed=embed)
+
 async def check_reply(ctx):
     thread = await ctx.bot.get_cog('ClaimThread').db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(ctx.bot.modmail_guild.id)})
     if thread and len(thread['claimers']) != 0:
