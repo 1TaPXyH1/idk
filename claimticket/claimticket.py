@@ -227,7 +227,6 @@ class ClaimThread(commands.Cog):
                 pass
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
-    @checks.thread_only()
     @commands.command()
     async def claims(self, ctx):
         """Check which channels you have claimed"""
@@ -253,8 +252,32 @@ class ClaimThread(commands.Cog):
                         )
 
         embed = discord.Embed(title='Your claimed tickets:', color=self.bot.main_color)
-        embed.description = ', '.join(ch.mention for ch in active_channels) if active_channels else "No active claims"
-        await ctx.send(embed=embed)
+        if active_channels:
+            description = []
+            for ch in active_channels:
+                try:
+                    recipient_id = match_user_id(ch.topic)
+                    if recipient_id:
+                        recipient = self.bot.get_user(recipient_id) or await self.bot.fetch_user(recipient_id)
+                        description.append(f"{ch.mention} - {recipient.name if recipient else 'Unknown User'}")
+                    else:
+                        description.append(ch.mention)
+                except:
+                    description.append(ch.mention)
+            embed.description = "\n".join(description)
+        else:
+            embed.description = "No active claims"
+            
+        try:
+            await ctx.send(embed=embed)
+        except:
+            try:
+                if active_channels:
+                    await ctx.send("Your claimed tickets:\n" + "\n".join([ch.mention for ch in active_channels]))
+                else:
+                    await ctx.send("No active claims")
+            except:
+                pass
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @claim_.command()
