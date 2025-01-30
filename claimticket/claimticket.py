@@ -678,13 +678,10 @@ class ClaimThread(commands.Cog):
         await ctx.send(embed=embed)
 
     async def remove_cooldown_reaction(self, ctx, seconds):
-        """Remove cooldown reaction after specified time"""
+        """Remove cooldown reaction and message after specified time"""
         await asyncio.sleep(seconds)
         try:
-            await ctx.message.remove_reaction('⏳', self.bot.user)
-            await ctx.message.add_reaction('🔄')  # Shows cooldown is over
-            await asyncio.sleep(5)  # Show the 🔄 for 5 seconds
-            await ctx.message.remove_reaction('🔄', self.bot.user)
+            await ctx.message.delete()  # Delete the command message after cooldown
         except:
             pass
 
@@ -693,7 +690,7 @@ class ClaimThread(commands.Cog):
         if isinstance(error, commands.CommandOnCooldown):
             try:
                 await ctx.message.add_reaction('⏳')
-                # Start task to remove cooldown reaction
+                # Start task to remove message after cooldown
                 asyncio.create_task(self.remove_cooldown_reaction(ctx, int(error.retry_after)))
             except:
                 pass
