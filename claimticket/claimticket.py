@@ -671,6 +671,87 @@ class ClaimThread(commands.Cog):
             'override_roles': config.get('override_roles', [])
         }
 
+    @checks.has_permissions(PermissionLevel.MODERATOR)
+    @commands.guild_only()
+    @claim_.group(name='override', invoke_without_command=True)
+    async def claim_override_(self, ctx):
+        """Manage override roles that can reply to any thread regardless of claim status"""
+        if not ctx.invoked_subcommand:
+            embed = discord.Embed(
+                title="Override Roles",
+                color=self.bot.main_color
+            )
+            if (roles_guild := await self.db.find_one({'_id': 'config'})) and roles_guild.get('override_roles', []):
+                roles_text = "\n".join(f"• {ctx.guild.get_role(r).mention}" for r in roles_guild['override_roles'] if ctx.guild.get_role(r))
+                embed.description = roles_text
+            else:
+                embed.description = "No override roles configured. Use `claim override add <role>` to add roles."
+            await ctx.send(embed=embed)
+
+    @checks.has_permissions(PermissionLevel.MODERATOR)
+    @commands.guild_only()
+    @claim_override_.command(name='add')
+    async def claim_override_add(self, ctx, *roles):
+        """Add roles that can reply to any thread regardless of claim status"""
+        override_roles = []
+        for rol in roles:
+            try:
+                role = await commands.RoleConverter().convert(ctx, rol)
+            except:
+                role = discord.utils.find(
+                    lambda r: r.name.lower() == rol.lower(), ctx.guild.roles
+                )
+            if role:
+                override_roles.append(role)
+
+        embed = discord.Embed(
+            title="Add Override Roles",
+            color=self.bot.main_color
+        )
+
+        if len(override_roles) != 0:
+            if await self.db.find_one({'_id': 'config'}):
+                for role in override_roles:
+                    await self.db.find_one_and_update(
+                        {'_id': 'config'}, 
+                        {'$addToSet': {'override_roles': role.id}}
+                    )
+            else:
+                await self.db.insert_one({
+                    '_id': 'config', 
+                    'override_roles': [r.id for r in override_roles]
+                })
+            added = "\n".join(f"• {r.mention}" for r in override_roles)
+            embed.description = f"**Added to override roles**:\n{added}"
+        else:
+            embed.description = "No valid roles provided"
+            embed.color = discord.Color.red()
+
+        await ctx.send(embed=embed)
+
+    @checks.has_permissions(PermissionLevel.MODERATOR)
+    @commands.guild_only()
+    @claim_override_.command(name='remove')
+    async def claim_override_remove(self, ctx, role: discord.Role):
+        """Remove a role from the override list"""
+        embed = discord.Embed(
+            title="Remove Override Role",
+            color=self.bot.main_color
+        )
+
+        roles_guild = await self.db.find_one({'_id': 'config'})
+        if roles_guild and role.id in roles_guild.get('override_roles', []):
+            await self.db.find_one_and_update(
+                {'_id': 'config'}, 
+                {'$pull': {'override_roles': role.id}}
+            )
+            embed.description = f"**Removed from override roles**:\n• {role.mention}"
+        else:
+            embed.description = f"{role.mention} is not in override roles"
+            embed.color = discord.Color.red()
+
+        await ctx.send(embed=embed)
+
 
 async def check_reply(ctx):
     thread = await ctx.bot.get_cog('ClaimThread').db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(ctx.bot.modmail_guild.id)})
