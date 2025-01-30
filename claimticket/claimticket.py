@@ -740,7 +740,7 @@ class ClaimThread(commands.Cog):
         )
 
         roles_guild = await self.db.find_one({'_id': 'config'})
-        if roles_guild and role.id in roles_guild.get('override_roles', []):
+        if roles_guild and role.id in roles_guild['override_roles']:
             await self.db.find_one_and_update(
                 {'_id': 'config'}, 
                 {'$pull': {'override_roles': role.id}}
