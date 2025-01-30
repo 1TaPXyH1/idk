@@ -19,6 +19,7 @@ class ClaimThread(commands.Cog):
         self.db = bot.api.get_plugin_partition(self)
         self._config_cache = {}
         self._cache_timestamp = 0
+        self.thread_cooldowns = {}
         check_reply.fail_msg = 'This thread has been claimed by another user.'
         self.bot.get_command('reply').add_check(check_reply)
         self.bot.get_command('areply').add_check(check_reply)
@@ -86,6 +87,9 @@ class ClaimThread(commands.Cog):
     @commands.cooldown(1, 60, commands.BucketType.channel)
     async def unclaim(self, ctx):
         """Unclaim a thread"""
+        if not await self.handle_thread_cooldown(ctx):
+            return
+            
         thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
         if thread and str(ctx.author.id) in thread['claimers']:
             try:
@@ -114,6 +118,9 @@ class ClaimThread(commands.Cog):
     @commands.cooldown(1, 60, commands.BucketType.channel)
     async def claim_(self, ctx):
         """Claim a thread"""
+        if not await self.handle_thread_cooldown(ctx):
+            return
+            
         try:
             channel = self.bot.get_channel(ctx.channel.id)
             if not channel:
@@ -169,6 +176,9 @@ class ClaimThread(commands.Cog):
     @commands.cooldown(1, 60, commands.BucketType.channel)
     async def change(self, ctx, *, member: discord.Member):
         """Change the claimer of the thread (Override permission required)"""
+        if not await self.handle_thread_cooldown(ctx):
+            return
+            
         has_override = False
         if config := await self.db.find_one({'_id': 'config'}):
             if 'override_roles' in config:
@@ -204,6 +214,9 @@ class ClaimThread(commands.Cog):
     @commands.cooldown(1, 60, commands.BucketType.channel)
     async def rename(self, ctx, *, new_name: str):
         """Rename the current thread"""
+        if not await self.handle_thread_cooldown(ctx):
+            return
+            
         try:
             await ctx.thread.channel.edit(name=new_name)
             await ctx.message.add_reaction('✅')
@@ -694,6 +707,29 @@ class ClaimThread(commands.Cog):
                 asyncio.create_task(self.remove_cooldown_reaction(ctx, int(error.retry_after)))
             except:
                 pass
+
+    async def thread_command_cooldown(self, ctx):
+        """Check if thread is on cooldown for any command"""
+        if not ctx.thread:
+            return True
+            
+        current_time = time.time()
+        thread_id = str(ctx.thread.channel.id)
+        
+        if thread_id in self.thread_cooldowns:
+            if current_time - self.thread_cooldowns[thread_id] < 60:  # 60 second cooldown
+                return False
+        
+        self.thread_cooldowns[thread_id] = current_time
+        return True
+
+    async def handle_thread_cooldown(self, ctx):
+        """Handle cooldown for thread commands"""
+        if not await self.thread_command_cooldown(ctx):
+            await ctx.message.add_reaction('⏳')
+            asyncio.create_task(self.remove_cooldown_reaction(ctx, 60))
+            return False
+        return True
 
 
 async def check_reply(ctx):
