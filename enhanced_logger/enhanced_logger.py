@@ -14,22 +14,33 @@ class EnhancedLogger(commands.Cog):
         self.log_cache = {}
         self.analytics_cache = {}
 
+    async def get_log_channel(self):
+        """Get the configured log channel"""
+        config = await self.bot.get_data()
+        log_channel_id = config.get('log_channel_id')
+        if log_channel_id:
+            return self.bot.get_channel(int(log_channel_id))
+        return None
+
     @commands.Cog.listener()
     async def on_thread_ready(self, thread, creator, category, initial_message):
         """Initialize thread tracking"""
         try:
-            if thread and hasattr(thread, 'channel'):
-                await self.db.insert_one({
-                    'thread_id': str(thread.id),
-                    'channel_id': str(thread.channel.id),
-                    'creator_id': str(creator.id),
-                    'creator_name': str(creator),
-                    'created_at': datetime.utcnow(),
-                    'claimed_by': None,
-                    'claim_time': None,
-                    'status': 'open'
-                })
-                print(f"New ticket created by {creator} in channel {thread.channel.id}")
+            if not thread or not hasattr(thread, 'channel'):
+                print("Invalid thread object")
+                return
+                
+            await self.db.insert_one({
+                'thread_id': str(thread.id),
+                'channel_id': str(thread.channel.id),
+                'creator_id': str(creator.id),
+                'creator_name': str(creator),
+                'created_at': datetime.utcnow(),
+                'claimed_by': None,
+                'claim_time': None,
+                'status': 'open'
+            })
+            print(f"New ticket created by {creator} in channel {thread.channel.id}")
         except Exception as e:
             print(f"Error initializing thread: {e}")
 
@@ -64,31 +75,33 @@ class EnhancedLogger(commands.Cog):
                 print("No valid thread found")
                 return
 
-            thread_data = await self.db.find_one({'thread_id': str(thread.id)})
-            if not thread_data:
-                print(f"No thread data found for {thread.id}")
+            # Get the log channel
+            log_channel = await self.get_log_channel()
+            if not log_channel:
+                print("Log channel not found")
                 return
 
-            # Get the channel from the stored ID
-            channel_id = int(thread_data.get('channel_id'))
-            channel = self.bot.get_channel(channel_id)
-            
-            if not channel:
-                print(f"Could not find channel {channel_id} for thread {thread.id}")
-                return
+            print(f"Processing closure for thread {thread.id}")
 
-            # Find the log message in the channel
+            # Find the log message in the log channel
             log_message = None
             try:
-                async for msg in channel.history(limit=10):
-                    if msg.embeds and any("Log" in embed.title for embed in msg.embeds):
-                        log_message = msg
+                async for msg in log_channel.history(limit=30):  # Increased limit to find recent log
+                    if msg.embeds:
+                        for embed in msg.embeds:
+                            # Check if this log message is for our thread
+                            if str(thread.id) in str(embed.description):
+                                log_message = msg
+                                break
+                    if log_message:
                         break
             except Exception as e:
-                print(f"Error searching channel history: {e}")
+                print(f"Error searching log channel history: {e}")
                 return
 
             if log_message:
+                thread_data = await self.db.find_one({'thread_id': str(thread.id)})
+                
                 # Create enhanced embed
                 embed = discord.Embed(
                     title="📝 Enhanced Ticket Log",
@@ -98,16 +111,19 @@ class EnhancedLogger(commands.Cog):
                 )
 
                 # Basic ticket info
+                creator_name = thread_data['creator_name'] if thread_data else "Unknown"
+                created_at = thread_data.get('created_at', datetime.utcnow()) if thread_data else datetime.utcnow()
+                
                 embed.add_field(
                     name="Ticket Information",
-                    value=f"**Creator:** {thread_data['creator_name']}\n"
-                          f"**Created:** {thread_data['created_at'].strftime('%Y-%m-%d %H:%M:%S')}",
+                    value=f"**Creator:** {creator_name}\n"
+                          f"**Created:** {created_at.strftime('%Y-%m-%d %H:%M:%S')}",
                     inline=False
                 )
 
-                # Claim information
-                claimed_by = thread_data.get('claimed_by', 'Not Claimed')
-                if claimed_by != 'Not Claimed':
+                # Claim information if available
+                if thread_data and thread_data.get('claimed_by'):
+                    claimed_by = thread_data.get('claimed_by', 'Not Claimed')
                     claim_time = thread_data.get('claim_time', datetime.utcnow())
                     embed.add_field(
                         name="Claim Information",
