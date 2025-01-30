@@ -57,6 +57,14 @@ class EnhancedLogger(commands.Cog):
         """Track thread closure"""
         try:
             if thread and closer:
+                # Get the thread creation time from our database
+                thread_data = await self.db.find_one({'thread_id': str(thread.id)})
+                if thread_data:
+                    created_at = thread_data.get('created_at', datetime.utcnow())
+                    resolution_time = (datetime.utcnow() - created_at).total_seconds() / 60
+                else:
+                    resolution_time = 0
+
                 await self.db.update_one(
                     {'thread_id': str(thread.id)},
                     {'$set': {
@@ -65,7 +73,7 @@ class EnhancedLogger(commands.Cog):
                         'closed_at': datetime.utcnow(),
                         'status': 'closed',
                         'close_message': str(message) if message else "No message provided",
-                        'resolution_time': (datetime.utcnow() - thread.created_at).total_seconds() / 60
+                        'resolution_time': resolution_time
                     }}
                 )
         except Exception as e:
