@@ -332,66 +332,144 @@ class ClaimThread(commands.Cog):
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @claim_.command(name="stats")
     async def claim_stats(self, ctx, member: discord.Member = None):
-        """View claim statistics for yourself or another member"""
+        """View comprehensive claim statistics for yourself or another member
+        
+        Shows both active and historical claims."""
         target = member or ctx.author
         
         # Get all claims for this user
         cursor = self.db.find({'guild': str(self.bot.modmail_guild.id)})
         current_claims = 0
         total_claims = 0
+        closed_claims = 0
         
         async for doc in cursor:
-            if 'claimers' in doc:
-                if str(target.id) in doc['claimers']:
-                    current_claims += 1
-                    total_claims += 1
+            if 'claimers' in doc and str(target.id) in doc['claimers']:
+                total_claims += 1
+                # Check if channel still exists (active claim)
+                try:
+                    channel = ctx.guild.get_channel(int(doc['thread_id'])) or await self.bot.fetch_channel(int(doc['thread_id']))
+                    if channel:
+                        current_claims += 1
+                    else:
+                        closed_claims += 1
+                except (discord.NotFound, discord.Forbidden):
+                    closed_claims += 1
         
         embed = discord.Embed(
             title=f"Claim Statistics for {target.display_name}",
-            color=self.bot.main_color
+            color=self.bot.main_color,
+            timestamp=ctx.message.created_at
         )
-        embed.add_field(name="Current Active Claims", value=str(current_claims))
+        
+        # Current claims
+        embed.add_field(
+            name="Active Claims",
+            value=str(current_claims),
+            inline=True
+        )
+        
+        # Historical claims
+        embed.add_field(
+            name="Closed Claims",
+            value=str(closed_claims),
+            inline=True
+        )
+        
+        # Total claims ever
+        embed.add_field(
+            name="Total Claims Ever",
+            value=str(total_claims),
+            inline=True
+        )
         
         # Get claim limit
         config = await self.db.find_one({'_id': 'config'})
         limit = config.get('limit', 0) if config else 0
         limit_text = str(limit) if limit > 0 else "No limit"
         
-        embed.add_field(name="Claim Limit", value=limit_text)
-        embed.add_field(name="Claims Available", 
-                       value=str(limit - current_claims) if limit > 0 else "∞")
+        embed.add_field(
+            name="Current Claim Limit", 
+            value=limit_text,
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Claims Available", 
+            value=str(limit - current_claims) if limit > 0 else "∞",
+            inline=True
+        )
+        
+        # Calculate percentage of total server claims
+        total_server_claims = 0
+        async for _ in self.db.find({'guild': str(self.bot.modmail_guild.id)}):
+            total_server_claims += 1
+            
+        if total_server_claims > 0:
+            percentage = (total_claims / total_server_claims) * 100
+            embed.add_field(
+                name="Percentage of Total Server Claims",
+                value=f"{percentage:.1f}%",
+                inline=True
+            )
         
         await ctx.send(embed=embed)
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
     @claim_.command(name="leaderboard", aliases=["lb"])
-    async def claim_leaderboard(self, ctx):
-        """View the top 10 supporters by active claims"""
+    async def claim_leaderboard(self, ctx, show_all: bool = False):
+        """View the top 10 supporters by claims
+        
+        Use '?claim leaderboard true' to see all-time stats including closed claims
+        Use '?claim leaderboard' to see only active claims"""
         cursor = self.db.find({'guild': str(self.bot.modmail_guild.id)})
-        claims_count = {}
+        active_claims = {}
+        all_claims = {}
         
         async for doc in cursor:
             if 'claimers' in doc:
+                # Track all claims
                 for claimer_id in doc['claimers']:
-                    claims_count[claimer_id] = claims_count.get(claimer_id, 0) + 1
+                    all_claims[claimer_id] = all_claims.get(claimer_id, 0) + 1
+                    
+                    # Check if claim is still active
+                    try:
+                        channel = ctx.guild.get_channel(int(doc['thread_id'])) or await self.bot.fetch_channel(int(doc['thread_id']))
+                        if channel:
+                            active_claims[claimer_id] = active_claims.get(claimer_id, 0) + 1
+                    except (discord.NotFound, discord.Forbidden):
+                        continue
         
-        # Sort by number of claims
-        sorted_claims = sorted(claims_count.items(), key=lambda x: x[1], reverse=True)[:10]
+        # Use appropriate data based on show_all parameter
+        claims_data = all_claims if show_all else active_claims
+        sorted_claims = sorted(claims_data.items(), key=lambda x: x[1], reverse=True)[:10]
         
         embed = discord.Embed(
-            title="Top Claimers",
-            color=self.bot.main_color
+            title=f"Top Claimers - {'All Time' if show_all else 'Active Claims'}",
+            color=self.bot.main_color,
+            timestamp=ctx.message.created_at
         )
         
         for idx, (user_id, count) in enumerate(sorted_claims, 1):
             user = ctx.guild.get_member(int(user_id))
             name = user.display_name if user else f"Unknown User ({user_id})"
-            embed.add_field(
-                name=f"#{idx} {name}",
-                value=f"{count} active claims",
-                inline=False
-            )
             
+            if show_all:
+                active_count = active_claims.get(user_id, 0)
+                closed_count = count - active_count
+                embed.add_field(
+                    name=f"#{idx} {name}",
+                    value=f"Total: {count} claims\nActive: {active_count}\nClosed: {closed_count}",
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name=f"#{idx} {name}",
+                    value=f"{count} active claims",
+                    inline=False
+                )
+            
+        embed.set_footer(text="Use '?claim leaderboard true' to see all-time stats")
         await ctx.send(embed=embed)
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
