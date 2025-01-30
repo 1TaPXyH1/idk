@@ -5,8 +5,36 @@ from discord.ui import Button, View
 from core import checks
 from core.checks import PermissionLevel
 
-class ClaimThread(commands.Cog):
-    """Allows supporters to claim threads using a button."""
+
+class ClaimButtonView(View):
+    def __init__(self, db, thread_id):
+        super().__init__(timeout=None)
+        self.db = db
+        self.thread_id = str(thread_id)
+
+    @discord.ui.button(label="Claim Ticket", style=discord.ButtonStyle.blurple)
+    async def claim_button(self, interaction: discord.Interaction, button: Button):
+        thread = await self.db.find_one({'thread_id': self.thread_id})
+        if thread is None:
+            # Claim the ticket and disable the button
+            await self.db.insert_one({'thread_id': self.thread_id, 'claimer': str(interaction.user.id)})
+            button.label = f"Claimed by {interaction.user.name}"
+            button.disabled = True
+            await interaction.response.edit_message(view=self)
+            await interaction.followup.send("You have claimed this ticket.", ephemeral=True)
+        else:
+            # Notify the user that the ticket is already claimed
+            claimer_id = thread['claimer']
+            claimer = interaction.guild.get_member(int(claimer_id))
+            claimer_name = claimer.name if claimer else "Unknown User"
+            await interaction.response.send_message(
+                f"This ticket has already been claimed by {claimer_name}.", ephemeral=True
+            )
+
+
+class ClaimTicket(commands.Cog):
+    """Automatically send a 'Claim Ticket' button when a thread is created."""
+
     def __init__(self, bot):
         self.bot = bot
         self.db = self.bot.plugin_db.get_partition(self)
@@ -20,44 +48,32 @@ class ClaimThread(commands.Cog):
             color=discord.Color.blurple()
         )
         view = ClaimButtonView(self.db, thread.id)
-        await thread.send(embed=embed, view=view)
+        await thread.send(content=None, embed=embed, view=view)
 
-
-class ClaimButtonView(View):
-    def __init__(self, db, thread_id):
-        super().__init__(timeout=None)
-        self.db = db
-        self.thread_id = thread_id
-
-    @discord.ui.button(label="Claim Ticket", style=discord.ButtonStyle.blurple)
-    async def claim_ticket(self, interaction: discord.Interaction, button: Button):
-        """Handles the claiming of a ticket."""
-        # Check if the thread is already claimed
-        thread = await self.db.find_one({"thread_id": str(self.thread_id)})
-
-        if thread:
-            claimer_id = thread.get("claimer")
-            if str(interaction.user.id) == claimer_id:
-                await interaction.response.send_message(
-                    "You have already claimed this ticket!", ephemeral=True
-                )
-                return
-
-            await interaction.response.send_message(
-                f"This ticket has already been claimed by <@{claimer_id}>.", ephemeral=True
-            )
+    @checks.has_permissions(PermissionLevel.MODERATOR)
+    @commands.command()
+    async def checkclaimer(self, ctx):
+        """Check who claimed the current thread."""
+        thread = await self.db.find_one({'thread_id': str(ctx.channel.id)})
+        if thread and 'claimer' in thread:
+            claimer_id = thread['claimer']
+            claimer = ctx.guild.get_member(int(claimer_id))
+            claimer_name = claimer.name if claimer else "Unknown User"
+            await ctx.send(f"This ticket was claimed by {claimer_name}.")
         else:
-            # Claim the thread
-            await self.db.insert_one({"thread_id": str(self.thread_id), "claimer": str(interaction.user.id)})
+            await ctx.send("This ticket has not been claimed yet.")
 
-            # Disable the button and update the message
-            button.disabled = True
-            button.label = f"Claimed by {interaction.user.display_name}"
+    @checks.has_permissions(PermissionLevel.MODERATOR)
+    @commands.command()
+    async def clearclaim(self, ctx):
+        """Clear the claim on the current thread."""
+        thread = await self.db.find_one({'thread_id': str(ctx.channel.id)})
+        if thread:
+            await self.db.delete_one({'thread_id': str(ctx.channel.id)})
+            await ctx.send("The claim has been cleared for this thread.")
+        else:
+            await ctx.send("No claim exists for this thread.")
 
-            await interaction.response.edit_message(view=self)
-            await interaction.channel.send(
-                f"This ticket has been claimed by {interaction.user.mention}."
-            )
 
 async def setup(bot):
-    await bot.add_cog(ClaimThread(bot))
+    await bot.add_cog(ClaimTicket(bot))
