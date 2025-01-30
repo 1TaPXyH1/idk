@@ -751,6 +751,16 @@ class ClaimThread(commands.Cog):
 
         await ctx.send(embed=embed)
 
+    @commands.command()
+    @checks.thread_only()
+    async def rename(self, ctx, *, new_name: str):
+        """Rename the current thread"""
+        try:
+            await ctx.thread.channel.edit(name=new_name)
+            await ctx.message.add_reaction('✅')
+        except (discord.Forbidden, discord.HTTPException, Exception):
+            await ctx.message.add_reaction('❌')
+
 
 async def check_reply(ctx):
     thread = await ctx.bot.get_cog('ClaimThread').db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(ctx.bot.modmail_guild.id)})
