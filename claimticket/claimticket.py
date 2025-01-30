@@ -667,7 +667,8 @@ class ClaimThread(commands.Cog):
         config = await self.db.find_one({'_id': 'config'}) or {}
         return {
             'limit': config.get('limit', 0),
-            'bypass_roles': config.get('bypass_roles', [])
+            'bypass_roles': config.get('bypass_roles', []),
+            'override_roles': config.get('override_roles', [])
         }
 
 
@@ -675,13 +676,21 @@ async def check_reply(ctx):
     thread = await ctx.bot.get_cog('ClaimThread').db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(ctx.bot.modmail_guild.id)})
     if thread and len(thread['claimers']) != 0:
         in_role = False
-        if config:= await ctx.bot.get_cog('ClaimThread').db.find_one({'_id': 'config'}):
+        has_override = False
+        if config := await ctx.bot.get_cog('ClaimThread').db.find_one({'_id': 'config'}):
+            # Check bypass roles
             if 'bypass_roles' in config:
                 roles = [ctx.guild.get_role(r) for r in config['bypass_roles'] if ctx.guild.get_role(r) is not None]
                 for role in roles:
                     if role in ctx.author.roles:
                         in_role = True
-        return ctx.author.bot or in_role or str(ctx.author.id) in thread['claimers']
+            # Check override roles
+            if 'override_roles' in config:
+                override_roles = [ctx.guild.get_role(r) for r in config['override_roles'] if ctx.guild.get_role(r) is not None]
+                for role in override_roles:
+                    if role in ctx.author.roles:
+                        has_override = True
+        return ctx.author.bot or in_role or has_override or str(ctx.author.id) in thread['claimers']
     return True
 
 
