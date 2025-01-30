@@ -106,7 +106,11 @@ class ClaimThread(commands.Cog):
                     self.bot.config["subscriptions"][str(ctx.thread.id)].remove(ctx.author.mention)
                     await self.bot.config.update()
                 
-                await ctx.message.add_reaction('✅')
+                embed = discord.Embed(
+                    color=self.bot.main_color,
+                    description=f"Removed from claimers.\n{ctx.author.mention} is now unsubscribed from this thread."
+                )
+                await ctx.send(embed=embed)
             except:
                 await ctx.message.add_reaction('❌')
         else:
@@ -119,13 +123,6 @@ class ClaimThread(commands.Cog):
     async def claim_(self, ctx):
         """Claim a thread"""
         if not await self.handle_thread_cooldown(ctx):
-            return
-            
-        try:
-            channel = self.bot.get_channel(ctx.channel.id)
-            if not channel:
-                return
-        except:
             return
 
         if not ctx.invoked_subcommand:
@@ -164,7 +161,11 @@ class ClaimThread(commands.Cog):
                             }
                         )
                     
-                    await ctx.message.add_reaction('✅')
+                    embed = discord.Embed(
+                        color=self.bot.main_color,
+                        description="Subscribed to thread.\nSuccessfully claimed the thread. Please respond to the case asap."
+                    )
+                    await ctx.send(embed=embed)
                 except:
                     await ctx.message.add_reaction('❌')
             else:
@@ -202,7 +203,12 @@ class ClaimThread(commands.Cog):
                 
                 new_name = f"{member.display_name} claimed"
                 await ctx.thread.channel.edit(name=new_name)
-                await ctx.message.add_reaction('✅')
+                
+                embed = discord.Embed(
+                    color=self.bot.main_color,
+                    description=f"Thread claimer changed to {member.mention}"
+                )
+                await ctx.send(embed=embed)
             else:
                 await ctx.message.add_reaction('❌')
         except:
@@ -717,7 +723,7 @@ class ClaimThread(commands.Cog):
         thread_id = str(ctx.thread.channel.id)
         
         if thread_id in self.thread_cooldowns:
-            if current_time - self.thread_cooldowns[thread_id] < 60:  # 60 second cooldown
+            if current_time - self.thread_cooldowns[thread_id] < 300:  # 5 minute cooldown (300 seconds)
                 return False
         
         self.thread_cooldowns[thread_id] = current_time
@@ -727,7 +733,7 @@ class ClaimThread(commands.Cog):
         """Handle cooldown for thread commands"""
         if not await self.thread_command_cooldown(ctx):
             await ctx.message.add_reaction('⏳')
-            asyncio.create_task(self.remove_cooldown_reaction(ctx, 60))
+            asyncio.create_task(self.remove_cooldown_reaction(ctx, 300))  # 5 minutes
             return False
         return True
 
