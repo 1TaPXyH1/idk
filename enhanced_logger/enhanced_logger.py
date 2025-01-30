@@ -44,23 +44,22 @@ class EnhancedLogger(commands.Cog):
         try:
             if reply and creator:
                 current_time = datetime.utcnow()
-                is_staff = hasattr(creator, 'roles')
+                # Better staff detection - check if member has guild roles
+                is_staff = isinstance(creator, discord.Member)
                 
-                await self.db.update_one(
-                    {'thread_id': str(thread.id)},
-                    {'$push': {
-                        'messages': {
-                            'author_id': str(creator.id),
-                            'author_name': str(creator),
-                            'content': reply,
-                            'timestamp': current_time,
-                            'is_staff': is_staff
-                        }
-                    }}
-                )
-                print(f"Message logged for ticket {thread.id} by {creator} (Staff: {is_staff})")
+                # Get existing ticket
+                ticket = await self.db.find_one({'thread_id': str(thread.id)})
+                if ticket:
+                    # Add creator to handlers if they're staff and not already listed
+                    if is_staff and str(creator.id) not in ticket.get('handlers', []):
+                        await self.db.update_one(
+                            {'thread_id': str(thread.id)},
+                            {'$push': {'handlers': str(creator.id)}}
+                        )
+                
+                print(f"Staff interaction logged for ticket {thread.id} by {creator}")
         except Exception as e:
-            print(f"Error logging message: {e}")
+            print(f"Error logging interaction: {e}")
 
     @commands.Cog.listener()
     async def on_thread_close(self, thread, closer, silent, delete_channel, message, time):
@@ -184,16 +183,11 @@ class EnhancedLogger(commands.Cog):
             start_date = datetime.utcnow() - timedelta(days=days)
             print(f"Fetching stats for {ctx.author}")
             
-            # Get tickets where user was involved
+            # Get tickets where user was a handler or closed them
             cursor = self.db.find({
                 '$or': [
-                    {'closed_by': str(ctx.author.id)},
-                    {'messages': {
-                        '$elemMatch': {
-                            'author_id': str(ctx.author.id),
-                            'is_staff': True
-                        }
-                    }}
+                    {'handlers': str(ctx.author.id)},
+                    {'closed_by': str(ctx.author.id)}
                 ],
                 'created_at': {'$gte': start_date}
             })
@@ -210,24 +204,15 @@ class EnhancedLogger(commands.Cog):
                 timestamp=ctx.message.created_at
             )
             
-            # Count messages and closed tickets
-            total_messages = 0
-            closed_tickets = 0
-            
-            for ticket in tickets:
-                messages = ticket.get('messages', [])
-                total_messages += sum(1 for m in messages 
-                                    if m.get('author_id') == str(ctx.author.id) 
-                                    and m.get('is_staff'))
-                
-                if (ticket.get('status') == 'closed' 
-                    and ticket.get('closed_by') == str(ctx.author.id)):
-                    closed_tickets += 1
+            # Count handled and closed tickets
+            handled_tickets = len(tickets)
+            closed_tickets = sum(1 for t in tickets 
+                               if t.get('status') == 'closed' 
+                               and t.get('closed_by') == str(ctx.author.id))
             
             embed.add_field(
                 name="Activity Overview",
-                value=f"Tickets Handled: {len(tickets)}\n"
-                      f"Messages Sent: {total_messages}\n"
+                value=f"Tickets Handled: {handled_tickets}\n"
                       f"Tickets Closed: {closed_tickets}",
                 inline=False
             )
