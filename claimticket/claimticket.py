@@ -63,6 +63,60 @@ class ClaimThread(commands.Cog):
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @checks.thread_only()
+    @commands.command()
+    async def unclaim(self, ctx):
+        """Unclaim a thread"""
+        embed = discord.Embed(color=self.bot.main_color)
+        description = ""
+        thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
+        if thread and str(ctx.author.id) in thread['claimers']:
+            await self.db.find_one_and_update(
+                {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)}, 
+                {'$pull': {'claimers': str(ctx.author.id)}}
+            )
+            description += 'Removed from claimers.\n'
+            
+            # Only mark as closed if the channel doesn't exist anymore
+            try:
+                channel = ctx.guild.get_channel(int(thread['thread_id'])) or await self.bot.fetch_channel(int(thread['thread_id']))
+                if not channel:
+                    await self.db.find_one_and_update(
+                        {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)},
+                        {'$set': {'status': 'closed'}}
+                    )
+            except (discord.NotFound, discord.Forbidden):
+                await self.db.find_one_and_update(
+                    {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)},
+                    {'$set': {'status': 'closed'}}
+                )
+            
+            recipient_id = match_user_id(ctx.thread.channel.topic)
+            recipient = self.bot.get_user(recipient_id) or await self.bot.fetch_user(recipient_id)
+            try:
+                await ctx.thread.channel.edit(name=recipient.name)
+            except discord.Forbidden:
+                description += "\nFailed to rename channel (Missing Permissions)"
+            except discord.HTTPException:
+                description += "\nFailed to rename channel"
+
+        if str(ctx.thread.id) not in self.bot.config["subscriptions"]:
+            self.bot.config["subscriptions"][str(ctx.thread.id)] = []
+
+        mentions = self.bot.config["subscriptions"][str(ctx.thread.id)]
+
+        if ctx.author.mention in mentions:
+            mentions.remove(ctx.author.mention)
+            await self.bot.config.update()
+            description += f"{ctx.author.mention} is now unsubscribed from this thread."
+
+        if description == "":
+            description = "Nothing to do"
+
+        embed.description = description
+        await ctx.send(embed=embed)
+
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    @checks.thread_only()
     @commands.group(name='claim', invoke_without_command=True)
     async def claim_(self, ctx, subscribe: bool = True):
         """Claim a thread"""
@@ -71,26 +125,29 @@ class ClaimThread(commands.Cog):
                 return await ctx.reply(f"Limit reached, can't claim the thread.")
 
             thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
-            recipient_id = match_user_id(ctx.thread.channel.topic)
-            recipient = self.bot.get_user(recipient_id) or await self.bot.fetch_user(recipient_id)
-
             description = ""
+            
             if subscribe:
                 if str(ctx.thread.id) not in self.bot.config["subscriptions"]:
                     self.bot.config["subscriptions"][str(ctx.thread.id)] = []
-
+                
                 mentions = self.bot.config["subscriptions"][str(ctx.thread.id)]
-
-                if ctx.author.mention in mentions:
-                    mentions.remove(ctx.author.mention)
-                    description += f"{ctx.author.mention} will __not__ be notified of any message now.\n"
-                else:
+                
+                if ctx.author.mention not in mentions:
                     mentions.append(ctx.author.mention)
-                    description += f"{ctx.author.mention} will now be notified of all messages received.\n"
-                await self.bot.config.update()
+                    await self.bot.config.update()
+                    description += "Subscribed to thread.\n"
 
             embed = discord.Embed(color=self.bot.main_color)
-            if thread is None or (thread and len(thread['claimers']) == 0):
+            if thread is None or not thread.get('claimers'):
+                # Remove closed status if it exists
+                if thread and thread.get('status') == 'closed':
+                    await self.db.find_one_and_update(
+                        {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)},
+                        {'$unset': {'status': ''}}
+                    )
+
+                # Update channel name
                 new_name = f"{ctx.author.display_name} claimed"
                 try:
                     await ctx.thread.channel.edit(name=new_name)
@@ -100,9 +157,16 @@ class ClaimThread(commands.Cog):
                     description += "\nFailed to rename channel"
 
                 if thread is None:
-                    await self.db.insert_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id), 'claimers': [str(ctx.author.id)]})
+                    await self.db.insert_one({
+                        'thread_id': str(ctx.thread.channel.id), 
+                        'guild': str(self.bot.modmail_guild.id), 
+                        'claimers': [str(ctx.author.id)]
+                    })
                 else:
-                    await self.db.find_one_and_update({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)}, {'$addToSet': {'claimers': str(ctx.author.id)}})
+                    await self.db.find_one_and_update(
+                        {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)},
+                        {'$addToSet': {'claimers': str(ctx.author.id)}}
+                    )
                 
                 description += "Please respond to the case asap."
                 embed.description = description
@@ -166,54 +230,6 @@ class ClaimThread(commands.Cog):
 
         embed = discord.Embed(color=self.bot.main_color)
         embed.description = f"Marked {count} deleted tickets as closed"
-        await ctx.send(embed=embed)
-
-    @checks.has_permissions(PermissionLevel.SUPPORTER)
-    @checks.thread_only()
-    @commands.command()
-    async def unclaim(self, ctx):
-        """Unclaim a thread"""
-        embed = discord.Embed(color=self.bot.main_color)
-        description = ""
-        thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
-        if thread and str(ctx.author.id) in thread['claimers']:
-            await self.db.find_one_and_update(
-                {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)}, 
-                {'$pull': {'claimers': str(ctx.author.id)}}
-            )
-            description += 'Removed from claimers.\n'
-            
-            # If no more claimers, mark as closed
-            updated_thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
-            if not updated_thread['claimers']:
-                await self.db.find_one_and_update(
-                    {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)},
-                    {'$set': {'status': 'closed'}}
-                )
-            
-            recipient_id = match_user_id(ctx.thread.channel.topic)
-            recipient = self.bot.get_user(recipient_id) or await self.bot.fetch_user(recipient_id)
-            try:
-                await ctx.thread.channel.edit(name=recipient.name)
-            except discord.Forbidden:
-                description += "\nFailed to rename channel (Missing Permissions)"
-            except discord.HTTPException:
-                description += "\nFailed to rename channel"
-
-        if str(ctx.thread.id) not in self.bot.config["subscriptions"]:
-            self.bot.config["subscriptions"][str(ctx.thread.id)] = []
-
-        mentions = self.bot.config["subscriptions"][str(ctx.thread.id)]
-
-        if ctx.author.mention in mentions:
-            mentions.remove(ctx.author.mention)
-            await self.bot.config.update()
-            description += f"{ctx.author.mention} is now unsubscribed from this thread."
-
-        if description == "":
-            description = "Nothing to do"
-
-        embed.description = description
         await ctx.send(embed=embed)
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
