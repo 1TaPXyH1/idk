@@ -583,6 +583,10 @@ async def check_reply(ctx):
         if channel_id in cog.check_message_cache:
             last_time = cog.check_message_cache[channel_id]
             if current_time - last_time < 5:  # 5 second cooldown
+                try:
+                    await ctx.message.delete()  # Delete the attempted response
+                except:
+                    pass
                 return False
                 
         thread = await cog.db.find_one({
@@ -611,7 +615,11 @@ async def check_reply(ctx):
         if not can_reply:
             # Update cache and send message
             cog.check_message_cache[channel_id] = current_time
-            await ctx.send(check_reply.fail_msg, delete_after=10)
+            try:
+                await ctx.message.delete()  # Delete the attempted response
+            except:
+                pass
+            await ctx.send(check_reply.fail_msg, delete_after=5)  # Reduced to 5 seconds
             return False
             
         return True
