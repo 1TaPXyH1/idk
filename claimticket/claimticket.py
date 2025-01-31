@@ -22,22 +22,15 @@ class ClaimThread(commands.Cog):
         self.db = bot.api.get_plugin_partition(self)
         self._config_cache = {}
         self._cache_timestamp = 0
-        self.thread_cooldowns = {}
         self.channel_cache = {}
+        self.user_cache = {}
         self.cache_lifetime = 300  # 5 minutes
-        self.thread_cd = 10  # 10 seconds
-        self.rate_limit_bucket = {}
-        self.bucket_reset = {}
         
-        # Track invalid requests to avoid Cloudflare bans (10,000 per 10 minutes limit)
-        self.invalid_requests = {}
-        self.invalid_reset = {}
+        # Track command usage per channel
+        self.command_usage = {}
+        self.reset_times = {}
         
         check_reply.fail_msg = 'This thread has been claimed by another user.'
-        
-        # Add cooldowns as instance variables
-        self.global_cooldown = CooldownMapping.from_cooldown(2, 5, BucketType.user)
-        self.user_cooldown = CooldownMapping.from_cooldown(1, 5, BucketType.user)
         
         # Add checks for main commands only
         for cmd_name in ['reply', 'areply', 'freply', 'fareply']:
@@ -53,102 +46,12 @@ class ClaimThread(commands.Cog):
             'thread_cooldown': 300    # 5 minutes per thread
         }
 
-    async def cog_before_invoke(self, ctx):
-        """Global cooldown check for all commands"""
-        bucket = self.global_cooldown.get_bucket(ctx.message)
-        retry_after = bucket.update_rate_limit()
-        if retry_after:
-            await ctx.message.add_reaction('⏳')
-            await asyncio.sleep(retry_after)
-            try:
-                await ctx.message.remove_reaction('⏳', self.bot.user)
-            except:
-                pass
-            raise commands.CommandOnCooldown(bucket, retry_after)
-
-    async def cog_command_error(self, ctx, error):
-        """Handle command errors gracefully"""
-        if isinstance(error, commands.CommandOnCooldown):
-            # Already handled in cog_before_invoke
-            pass
-        elif isinstance(error, discord.HTTPException) and error.code == 429:
-            await ctx.message.add_reaction('⏳')
-            await asyncio.sleep(error.retry_after)
-            try:
-                await ctx.message.remove_reaction('⏳', self.bot.user)
-                await ctx.reinvoke()
-            except:
-                pass
-        else:
-            raise error
-
-    async def handle_rate_limit(self, ctx):
-        """Handle Discord's rate limits properly"""
-        try:
-            # If we hit a 429, we need to wait the retry_after period
-            if hasattr(ctx, 'response') and ctx.response.status == 429:
-                retry_after = float(ctx.response.headers.get('Retry-After', 60))
-                is_global = ctx.response.headers.get('X-RateLimit-Global', False)
-                
-                if is_global:
-                    # Global rate limit (50 requests per second)
-                    await ctx.message.add_reaction('⏳')
-                    await asyncio.sleep(retry_after)
-                    await ctx.message.remove_reaction('⏳', self.bot.user)
-                    return False
-                    
-                # Handle shared rate limits
-                if ctx.response.headers.get('X-RateLimit-Scope') == 'shared':
-                    await ctx.message.add_reaction('⏳')
-                    await asyncio.sleep(retry_after)
-                    await ctx.message.remove_reaction('⏳', self.bot.user)
-                    return False
-                    
-            return True
-            
-        except discord.HTTPException as e:
-            if e.code == 429:  # Rate limit exceeded
-                retry_after = e.retry_after
-                await ctx.message.add_reaction('⏳')
-                # For Cloudflare bans (10 minute cooldown)
-                if retry_after > 300:  # If retry_after is more than 5 minutes
-                    await ctx.send(
-                        "Rate limit exceeded. Please wait 10 minutes before trying again.",
-                        delete_after=10
-                    )
-                await asyncio.sleep(retry_after)
-                await ctx.message.remove_reaction('⏳', self.bot.user)
-                return False
-            raise
-
-    async def get_channel(self, channel_id: int):
-        """Get channel with caching to reduce API calls"""
-        # Try cache first
-        if channel_id in self.channel_cache:
-            channel, timestamp = self.channel_cache[channel_id]
-            if time.time() - timestamp < self.cache_lifetime:
-                return channel
-
-        # Check bot's cache first (no API call)
-        channel = self.bot.get_channel(channel_id)
-        if channel:
-            self.channel_cache[channel_id] = (channel, time.time())
-            return channel
-
-        # Only fetch as last resort
-        try:
-            channel = await self.bot.fetch_channel(channel_id)
-            self.channel_cache[channel_id] = (channel, time.time())
-            return channel
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            return None
-
     async def clean_old_claims(self):
         """Clean up claims for non-existent channels"""
         cursor = self.db.find({'guild': str(self.bot.modmail_guild.id)})
         async for doc in cursor:
             if 'thread_id' in doc:
-                channel = await self.get_channel(int(doc['thread_id']))
+                channel = self.bot.get_channel(int(doc['thread_id']))  # Use cache first
                 if not channel and ('status' not in doc or doc['status'] != 'closed'):
                     await self.db.find_one_and_update(
                         {'thread_id': doc['thread_id'], 'guild': doc['guild']},
@@ -160,60 +63,116 @@ class ClaimThread(commands.Cog):
         """Clean up old claims when bot starts"""
         await self.clean_old_claims()
 
-    async def check_claimer(self, ctx, claimer_id):
-        """
-        Check if a user can claim more threads
+    async def get_config(self):
+        """Get plugin configuration with defaults"""
+        config = await self.db.find_one({'_id': 'config'}) or {}
+        return {
+            'limit': config.get('limit', self.default_config['limit']),
+            'bypass_roles': config.get('bypass_roles', self.default_config['bypass_roles']),
+            'override_roles': config.get('override_roles', self.default_config['override_roles']),
+            'command_cooldown': config.get('command_cooldown', self.default_config['command_cooldown']),
+            'thread_cooldown': config.get('thread_cooldown', self.default_config['thread_cooldown'])
+        }
+
+    async def handle_rate_limit(self, ctx):
+        """Handle rate limits with better caching"""
+        channel_id = str(ctx.channel.id)
+        now = time.time()
         
-        Parameters
-        ----------
-        ctx : Context
-            The command context
-        claimer_id : int
-            The ID of the user attempting to claim
+        # Initialize or clean up usage tracking
+        if channel_id not in self.command_usage:
+            self.command_usage[channel_id] = 0
+            self.reset_times[channel_id] = now + 2
             
-        Returns
-        -------
-        bool
-            True if user can claim more threads, False otherwise
-        """
-        config = await self.db.find_one({'_id': 'config'})
-        if config and 'limit' in config:
-            if config['limit'] == 0:
-                return True
-        else:
-            raise commands.BadArgument(f"Set Limit first. `{ctx.prefix}claim limit`")
-
-        cursor = self.db.find({'guild':str(self.bot.modmail_guild.id)})
-        count = 0
-        async for doc in cursor:
-            if 'claimers' in doc and str(claimer_id) in doc['claimers']:
-                if 'status' not in doc or doc['status'] != 'closed':
-                    try:
-                        channel = ctx.guild.get_channel(int(doc['thread_id'])) or await self.bot.fetch_channel(int(doc['thread_id']))
-                        if channel:
-                            count += 1
-                    except discord.NotFound:
-                        await self.db.find_one_and_update(
-                            {'thread_id': doc['thread_id'], 'guild': doc['guild']},
-                            {'$set': {'status': 'closed'}}
-                        )
-
-        return count < config['limit']
-
-    async def check_before_update(self, channel):
-        if channel.guild != self.bot.modmail_guild or await self.bot.api.get_log(channel.id) is None:
+        # Clean old entries
+        if now > self.reset_times[channel_id]:
+            self.command_usage[channel_id] = 0
+            self.reset_times[channel_id] = now + 2
+            
+        # Check usage
+        self.command_usage[channel_id] += 1
+        if self.command_usage[channel_id] > 2:  # More than 2 commands in 2 seconds
+            wait_time = 600  # 10 minutes
+            await ctx.message.add_reaction('⏳')
+            await ctx.send(
+                f"Rate limit exceeded. Please wait {wait_time//60} minutes before trying again.",
+                delete_after=10
+            )
+            await asyncio.sleep(wait_time)
+            try:
+                await ctx.message.remove_reaction('⏳', self.bot.user)
+            except:
+                pass
+            
+            # Reset after waiting
+            self.command_usage[channel_id] = 0
+            self.reset_times[channel_id] = now + 2
             return False
-
+            
         return True
 
-    @commands.Cog.listener()
-    async def on_guild_channel_delete(self, channel):
-        """When a thread is deleted, mark it as closed in the database instead of deleting it"""
-        if await self.check_before_update(channel):
-            await self.db.find_one_and_update(
-                {'thread_id': str(channel.id), 'guild': str(self.bot.modmail_guild.id)},
-                {'$set': {'status': 'closed'}}
+    async def get_channel(self, channel_id: int):
+        """Get channel with optimized caching"""
+        if channel_id in self.channel_cache:
+            channel, timestamp = self.channel_cache[channel_id]
+            if time.time() - timestamp < self.cache_lifetime:
+                return channel
+
+        channel = self.bot.get_channel(channel_id)
+        if channel:
+            self.channel_cache[channel_id] = (channel, time.time())
+            return channel
+
+        return None  # Don't fetch if not in cache
+
+    async def get_user(self, user_id: int):
+        """Get user with optimized caching"""
+        if user_id in self.user_cache:
+            user, timestamp = self.user_cache[user_id]
+            if time.time() - timestamp < self.cache_lifetime:
+                return user
+
+        user = self.bot.get_user(user_id)
+        if user:
+            self.user_cache[user_id] = (user, time.time())
+            return user
+
+        return None  # Don't fetch if not in cache
+
+    @commands.command(name="lb")
+    async def claim_leaderboard(self, ctx):
+        """Show claim leaderboard with minimal API calls"""
+        if not await self.handle_rate_limit(ctx):
+            return
+            
+        claims = {}
+        async for doc in self.db.find(
+            {
+                'guild': str(self.bot.modmail_guild.id),
+                'status': {'$ne': 'closed'},
+                'claimers': {'$exists': True}
+            }
+        ):
+            for claimer in doc['claimers']:
+                claims[claimer] = claims.get(claimer, 0) + 1
+
+        sorted_claims = sorted(claims.items(), key=lambda x: x[1], reverse=True)[:10]
+        
+        embed = discord.Embed(
+            title="Claim Leaderboard",
+            color=self.bot.main_color
+        )
+        
+        for i, (user_id, claim_count) in enumerate(sorted_claims, 1):
+            user = await self.get_user(int(user_id))
+            name = user.name if user else f"User {user_id}"
+            embed.add_field(
+                name=f"{i}. {name}",
+                value=f"Claims: {claim_count}",
+                inline=False
             )
+                
+        await ctx.send(embed=embed)
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @checks.thread_only()
@@ -560,116 +519,35 @@ class ClaimThread(commands.Cog):
         
         await ctx.send(embed=embed)
 
-    @checks.has_permissions(PermissionLevel.SUPPORTER)
-    @commands.command(name="lb")
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    async def claim_leaderboard(self, ctx):
-        """View the top 10 supporters by all-time claims including closed claims"""
-        cursor = self.db.find({'guild': str(self.bot.modmail_guild.id)})
-        active_claims = {}
-        closed_claims = {}
-        
-        async for doc in cursor:
-            if 'claimers' in doc:
-                try:
-                    channel = ctx.guild.get_channel(int(doc['thread_id'])) or await self.bot.fetch_channel(int(doc['thread_id']))
-                    for claimer_id in doc['claimers']:
-                        if channel:
-                            active_claims[claimer_id] = active_claims.get(claimer_id, 0) + 1
-                            if 'status' in doc and doc['status'] == 'closed':
-                                await self.db.find_one_and_update(
-                                    {'thread_id': doc['thread_id'], 'guild': doc['guild']},
-                                    {'$unset': {'status': ''}}
-                                )
-                        else:
-                            closed_claims[claimer_id] = closed_claims.get(claimer_id, 0) + 1
-                            if 'status' not in doc or doc['status'] != 'closed':
-                                await self.db.find_one_and_update(
-                                    {'thread_id': doc['thread_id'], 'guild': doc['guild']},
-                                    {'$set': {'status': 'closed'}}
-                                )
-                except (discord.NotFound, discord.Forbidden):
-                    for claimer_id in doc['claimers']:
-                        closed_claims[claimer_id] = closed_claims.get(claimer_id, 0) + 1
-                    if 'status' not in doc or doc['status'] != 'closed':
-                        await self.db.find_one_and_update(
-                            {'thread_id': doc['thread_id'], 'guild': doc['guild']},
-                            {'$set': {'status': 'closed'}}
-                        )
-        
-        # Calculate total claims for each user
-        all_claims = {}
-        for user_id in set(list(active_claims.keys()) + list(closed_claims.keys())):
-            all_claims[user_id] = active_claims.get(user_id, 0) + closed_claims.get(user_id, 0)
-        
-        sorted_claims = sorted(all_claims.items(), key=lambda x: x[1], reverse=True)[:10]
-        
-        embed = discord.Embed(
-            title="Top Claimers - All Time Stats",
-            color=self.bot.main_color,
-            timestamp=ctx.message.created_at
-        )
-        
-        for idx, (user_id, count) in enumerate(sorted_claims, 1):
-            user = ctx.guild.get_member(int(user_id))
-            name = user.display_name if user else f"Unknown User ({user_id})"
-            
-            active = active_claims.get(user_id, 0)
-            closed = closed_claims.get(user_id, 0)
-            embed.add_field(
-                name=f"#{idx} {name}",
-                value=f"Total: {count} claims\nActive: {active}\nClosed: {closed}",
-                inline=False
-            )
-            
-        await ctx.send(embed=embed)
-
     @checks.has_permissions(PermissionLevel.MODERATOR)
     @commands.command(name="overview")
     @commands.cooldown(1, 5, commands.BucketType.user)
     async def claim_overview(self, ctx):
-        """View overview of claim system statistics"""
+        """Show claim overview with reduced API calls"""
         cursor = self.db.find({'guild': str(self.bot.modmail_guild.id)})
-        
-        # Initialize counters
-        stats = {
-            'total_claims': 0,
-            'active_claims': 0,
-            'closed_claims': 0
-        }
+        active_claims = []
         
         async for doc in cursor:
-            if 'claimers' in doc and doc['claimers']:
-                stats['total_claims'] += 1
-                
-                # Check if thread is closed
-                if 'status' in doc and doc['status'] == 'closed':
-                    stats['closed_claims'] += 1
-                else:
-                    stats['active_claims'] += 1
-        
-        # Create embed
+            if 'claimers' in doc and ('status' not in doc or doc['status'] != 'closed'):
+                channel = await self.get_channel(int(doc['thread_id']))
+                if channel:
+                    for claimer_id in doc['claimers']:
+                        user = await self.get_user(int(claimer_id))
+                        if user:
+                            active_claims.append((channel.name, user.name))
+
         embed = discord.Embed(
-            title="ModMail Claim Statistics",
-            color=self.bot.main_color,
-            timestamp=ctx.message.created_at
+            title="Active Claims Overview",
+            color=self.bot.main_color
         )
         
-        # Calculate closure percentage
-        closure_percent = 0
-        if stats['total_claims'] > 0:
-            closure_percent = (stats['closed_claims'] / stats['total_claims']) * 100
-        
-        # Add statistics
-        embed.add_field(
-            name="Claims Overview",
-            value=f"Total Claims: **{stats['total_claims']}**\n"
-                  f"Active Claims: **{stats['active_claims']}**\n"
-                  f"Closed Claims: **{stats['closed_claims']}**\n"
-                  f"Closure Rate: **{closure_percent:.1f}%**",
-            inline=False
-        )
-        
+        for thread_name, claimer_name in active_claims:
+            embed.add_field(
+                name=thread_name,
+                value=f"Claimed by: {claimer_name}",
+                inline=False
+            )
+            
         await ctx.send(embed=embed)
 
     async def get_cached_config(self):
@@ -680,16 +558,45 @@ class ClaimThread(commands.Cog):
             self._cache_timestamp = now
         return self._config_cache
 
-    async def get_config(self):
-        """Get plugin configuration with defaults"""
-        config = await self.db.find_one({'_id': 'config'}) or {}
-        return {
-            'limit': config.get('limit', self.default_config['limit']),
-            'bypass_roles': config.get('bypass_roles', self.default_config['bypass_roles']),
-            'override_roles': config.get('override_roles', self.default_config['override_roles']),
-            'command_cooldown': config.get('command_cooldown', self.default_config['command_cooldown']),
-            'thread_cooldown': config.get('thread_cooldown', self.default_config['thread_cooldown'])
-        }
+    async def check_claimer(self, ctx, claimer_id):
+        """
+        Check if a user can claim more threads
+        
+        Parameters
+        ----------
+        ctx : Context
+            The command context
+        claimer_id : int
+            The ID of the user attempting to claim
+            
+        Returns
+        -------
+        bool
+            True if user can claim more threads, False otherwise
+        """
+        config = await self.db.find_one({'_id': 'config'})
+        if config and 'limit' in config:
+            if config['limit'] == 0:
+                return True
+        else:
+            raise commands.BadArgument(f"Set Limit first. `{ctx.prefix}claim limit`")
+
+        cursor = self.db.find({'guild':str(self.bot.modmail_guild.id)})
+        count = 0
+        async for doc in cursor:
+            if 'claimers' in doc and str(claimer_id) in doc['claimers']:
+                if 'status' not in doc or doc['status'] != 'closed':
+                    try:
+                        channel = ctx.guild.get_channel(int(doc['thread_id'])) or await self.bot.fetch_channel(int(doc['thread_id']))
+                        if channel:
+                            count += 1
+                    except discord.NotFound:
+                        await self.db.find_one_and_update(
+                            {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                            {'$set': {'status': 'closed'}}
+                        )
+
+        return count < config['limit']
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
     @commands.group(name='override', invoke_without_command=True)
