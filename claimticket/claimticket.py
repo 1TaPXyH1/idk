@@ -188,7 +188,7 @@ class ClaimThread(commands.Cog):
 
         if not total_claims:
             embed = discord.Embed(
-                title=f"Claim Leaderboard {f'- Past {days} days' if days else '- All Time'}",
+                title="CLAIM LEADERBOARD",
                 description="No claims found",
                 color=self.bot.main_color
             )
@@ -196,19 +196,23 @@ class ClaimThread(commands.Cog):
 
         sorted_claims = sorted(total_claims.items(), key=lambda x: x[1], reverse=True)[:10]
         
-        embed = discord.Embed(
-            title=f"Claim Leaderboard {f'- Past {days} days' if days else '- All Time'}",
-            color=self.bot.main_color
-        )
-        
-        description = []
+        description = [""]
         for i, (user_id, claim_count) in enumerate(sorted_claims, 1):
             user = await self.get_user(int(user_id))
             name = user.name if user else f"User {user_id}"
             active = claims.get(user_id, 0)
-            description.append(f"`{i}.` **{name}**\n└ Total: {claim_count} | Active: {active}")
+            
+            claim_text = "claim" if claim_count == 1 else "claims"
+            description.append(
+                f"`{i}.` {name:<15} ⦿ {claim_count} {claim_text} ({active} active)"
+            )
 
-        embed.description = "\n".join(description)
+        embed = discord.Embed(
+            title=f"CLAIM LEADERBOARD{' - Past ' + str(days) + ' days' if days else ''}",
+            description="\n".join(description),
+            color=self.bot.main_color
+        )
+        
         await ctx.send(embed=embed)
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
