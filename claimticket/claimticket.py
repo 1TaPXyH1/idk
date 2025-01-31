@@ -168,8 +168,23 @@ class ClaimThread(commands.Cog):
                     
             for claimer in doc['claimers']:
                 total_claims[claimer] = total_claims.get(claimer, 0) + 1
-                if 'status' not in doc or doc['status'] != 'closed':
-                    claims[claimer] = claims.get(claimer, 0) + 1
+                # Check if claim is active
+                try:
+                    channel = self.bot.get_channel(int(doc['thread_id']))
+                    if channel and ('status' not in doc or doc['status'] != 'closed'):
+                        claims[claimer] = claims.get(claimer, 0) + 1
+                    elif not channel and ('status' not in doc or doc['status'] != 'closed'):
+                        # Update status if channel doesn't exist
+                        await self.db.find_one_and_update(
+                            {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                            {'$set': {'status': 'closed'}}
+                        )
+                except:
+                    if 'status' not in doc or doc['status'] != 'closed':
+                        await self.db.find_one_and_update(
+                            {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                            {'$set': {'status': 'closed'}}
+                        )
 
         if not total_claims:
             embed = discord.Embed(
@@ -397,22 +412,22 @@ class ClaimThread(commands.Cog):
             if 'claimers' in doc and str(target.id) in doc['claimers']:
                 try:
                     channel = ctx.guild.get_channel(int(doc['thread_id'])) or await self.bot.fetch_channel(int(doc['thread_id']))
-                    if channel:
+                    if channel and ('status' not in doc or doc['status'] != 'closed'):
                         active_claims.append(doc)
                     else:
-                        if 'status' not in doc or doc['status'] != 'closed':
+                        closed_claims.append(doc)
+                        if not channel and ('status' not in doc or doc['status'] != 'closed'):
                             await self.db.find_one_and_update(
                                 {'thread_id': doc['thread_id'], 'guild': doc['guild']},
                                 {'$set': {'status': 'closed'}}
                             )
-                        closed_claims.append(doc)
                 except (discord.NotFound, discord.Forbidden):
+                    closed_claims.append(doc)
                     if 'status' not in doc or doc['status'] != 'closed':
                         await self.db.find_one_and_update(
                             {'thread_id': doc['thread_id'], 'guild': doc['guild']},
                             {'$set': {'status': 'closed'}}
                         )
-                    closed_claims.append(doc)
         
         total_claims = len(active_claims) + len(closed_claims)
         
