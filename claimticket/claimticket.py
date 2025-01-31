@@ -466,8 +466,7 @@ class ClaimThread(commands.Cog):
         stats = {
             'active': 0,
             'closed': 0,
-            'total': 0,
-            'by_user': {}
+            'total': 0
         }
         
         async for doc in self.db.find({
@@ -476,17 +475,10 @@ class ClaimThread(commands.Cog):
         }):
             stats['total'] += 1
             
-            # Track user stats
-            for claimer_id in doc['claimers']:
-                if claimer_id not in stats['by_user']:
-                    stats['by_user'][claimer_id] = {'active': 0, 'closed': 0}
-                
-                if 'status' in doc and doc['status'] == 'closed':
-                    stats['closed'] += 1
-                    stats['by_user'][claimer_id]['closed'] += 1
-                else:
-                    stats['active'] += 1
-                    stats['by_user'][claimer_id]['active'] += 1
+            if 'status' in doc and doc['status'] == 'closed':
+                stats['closed'] += 1
+            else:
+                stats['active'] += 1
 
         if stats['total'] == 0:
             embed = discord.Embed(
@@ -505,30 +497,12 @@ class ClaimThread(commands.Cog):
         )
         
         # Overall stats
-        embed.add_field(
-            name="Overall Statistics",
-            value=f"Active Claims: **{stats['active']}**\n"
-                  f"Closed Claims: **{stats['closed']}**\n"
-                  f"Total Claims: **{stats['total']}**\n"
-                  f"Closure Rate: **{closure_rate:.1f}%**",
-            inline=False
+        embed.description = (
+            f"Active Claims: **{stats['active']}**\n"
+            f"Closed Claims: **{stats['closed']}**\n"
+            f"Total Claims: **{stats['total']}**\n"
+            f"Closure Rate: **{closure_rate:.1f}%**"
         )
-        
-        # Per-user stats
-        for user_id, user_stats in stats['by_user'].items():
-            user = await self.get_user(int(user_id))
-            name = user.name if user else f"User {user_id}"
-            total = user_stats['active'] + user_stats['closed']
-            user_closure_rate = (user_stats['closed'] / total * 100) if total > 0 else 0
-            
-            embed.add_field(
-                name=name,
-                value=f"Active: **{user_stats['active']}**\n"
-                      f"Closed: **{user_stats['closed']}**\n"
-                      f"Total: **{total}**\n"
-                      f"Closure Rate: **{user_closure_rate:.1f}%**",
-                inline=True
-            )
             
         await ctx.send(embed=embed)
 
