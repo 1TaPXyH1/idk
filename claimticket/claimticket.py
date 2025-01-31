@@ -30,8 +30,8 @@ class ClaimThread(commands.Cog):
         self.bucket_reset = {}
         check_reply.fail_msg = 'This thread has been claimed by another user.'
         
-        # Replace manual rate limits with CooldownMapping
-        self.global_cooldown = CooldownMapping.from_cooldown(5, 5, BucketType.channel)
+        # Global cooldown for all commands (2 per 5 seconds per user)
+        self.bot.global_cooldown = CooldownMapping.from_cooldown(2, 5, BucketType.user)
         self.user_cooldown = CooldownMapping.from_cooldown(1, 5, BucketType.user)
         
         # Add checks for main commands only
@@ -47,6 +47,35 @@ class ClaimThread(commands.Cog):
             'command_cooldown': 5,    # 5 seconds per user
             'thread_cooldown': 300    # 5 minutes per thread
         }
+
+    async def cog_before_invoke(self, ctx):
+        """Global cooldown check for all commands"""
+        bucket = self.bot.global_cooldown.get_bucket(ctx.message)
+        retry_after = bucket.update_rate_limit()
+        if retry_after:
+            await ctx.message.add_reaction('⏳')
+            await asyncio.sleep(retry_after)
+            try:
+                await ctx.message.remove_reaction('⏳', self.bot.user)
+            except:
+                pass
+            raise commands.CommandOnCooldown(bucket, retry_after)
+
+    async def cog_command_error(self, ctx, error):
+        """Handle command errors gracefully"""
+        if isinstance(error, commands.CommandOnCooldown):
+            # Already handled in cog_before_invoke
+            pass
+        elif isinstance(error, discord.HTTPException) and error.code == 429:
+            await ctx.message.add_reaction('⏳')
+            await asyncio.sleep(error.retry_after)
+            try:
+                await ctx.message.remove_reaction('⏳', self.bot.user)
+                await ctx.reinvoke()
+            except:
+                pass
+        else:
+            raise error
 
     async def handle_rate_limit(self, ctx):
         """Improved rate limit handling using CooldownMapping with exponential backoff"""
@@ -77,7 +106,7 @@ class ClaimThread(commands.Cog):
         return True
 
     async def get_channel(self, channel_id: int):
-        """Get channel with improved caching and rate limit handling"""
+        """Get channel with caching to reduce API calls"""
         # Try cache first
         if channel_id in self.channel_cache:
             channel, timestamp = self.channel_cache[channel_id]
@@ -90,23 +119,13 @@ class ClaimThread(commands.Cog):
             self.channel_cache[channel_id] = (channel, time.time())
             return channel
 
-        # Only use fetch_channel as last resort
-        retries = 0
-        while retries < 5:
-            try:
-                channel = await self.bot.fetch_channel(channel_id)
-                self.channel_cache[channel_id] = (channel, time.time())
-                return channel
-            except discord.HTTPException as e:
-                if e.code == 429:
-                    wait_time = min(2 ** retries + random.uniform(0, 1), 10)
-                    await asyncio.sleep(wait_time)
-                    retries += 1
-                    continue
-                return None
-            except (discord.NotFound, discord.Forbidden):
-                return None
-        return None
+        # Only fetch as last resort
+        try:
+            channel = await self.bot.fetch_channel(channel_id)
+            self.channel_cache[channel_id] = (channel, time.time())
+            return channel
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return None
 
     async def clean_old_claims(self):
         """Clean up claims for non-existent channels"""
@@ -797,16 +816,6 @@ class ClaimThread(commands.Cog):
             await ctx.message.delete()  # Delete the command message after cooldown
         except:
             pass
-
-    # Generic error handler for all commands with cooldowns
-    async def cog_command_error(self, ctx, error):
-        if isinstance(error, commands.CommandOnCooldown):
-            try:
-                await ctx.message.add_reaction('⏳')
-                # Start task to remove message after cooldown
-                asyncio.create_task(self.remove_cooldown_reaction(ctx, int(error.retry_after)))
-            except:
-                pass
 
     async def handle_thread_cooldown(self, ctx):
         """Handle thread cooldown with rate limit consideration"""
