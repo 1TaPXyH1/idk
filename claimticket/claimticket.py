@@ -25,13 +25,11 @@ class ClaimThread(commands.Cog):
         self.channel_cache = {}
         self.user_cache = {}
         self.cache_lifetime = 300  # 5 minutes
-        self.check_message_cache = {}  # Add this line
+        self.check_message_cache = {}
         
         # Track command usage per channel
         self.command_usage = {}
         self.reset_times = {}
-        
-        check_reply.fail_msg = 'This thread has been claimed by another user.'
         
         # Add checks for main commands only
         for cmd_name in ['reply', 'areply', 'freply', 'fareply']:
