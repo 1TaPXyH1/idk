@@ -638,14 +638,9 @@ class ClaimThread(commands.Cog):
             await ctx.send(embed=embed)
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
-    @commands.group(name='override', invoke_without_command=True)
     @claim_override_.command(name='add')
     async def claim_override_add(self, ctx, *roles):
-        """Add roles that can reply to any thread regardless of claim status
-        
-        Usage: override add <role1> [role2] [role3] ...
-        Accepts role mentions, IDs, or names
-        """
+        """Add roles that can reply to any thread regardless of claim status"""
         if not roles:
             embed = discord.Embed(
                 title="Error",
@@ -700,14 +695,9 @@ class ClaimThread(commands.Cog):
         await ctx.send(embed=embed)
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
-    @commands.group(name='override', invoke_without_command=True)
     @claim_override_.command(name='remove')
     async def claim_override_remove(self, ctx, *, role: discord.Role):
-        """Remove a role from the override list
-        
-        Usage: override remove <role>
-        Accepts role mention, ID, or name
-        """
+        """Remove a role from the override list"""
         config = await self.get_config()
         override_roles = config.get('override_roles', [])
         
