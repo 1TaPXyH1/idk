@@ -524,13 +524,13 @@ class ClaimThread(commands.Cog):
         closure_rate = (stats['closed'] / stats['total'] * 100) if stats['total'] > 0 else 0
 
         embed = discord.Embed(
-            title="CLAIMS OVERVIEW                    📊",
+            title=f"CLAIMS OVERVIEW                    📈",
             description=(
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                "ACTIVE         CLOSED         TOTAL\n"
-                f"   {stats['active']}             {stats['closed']}            {stats['total']}\n\n"
+                "ACTIVE    CLOSED    TOTAL\n"
+                f"   {stats['active']}         {stats['closed']}        {stats['total']}\n\n"
                 "CLOSURE RATE\n"
-                "⸻⸻⸻⸻⸻\n"
+                "━━━━━━━━━━\n"
                 f"{closure_rate:.1f}%"
             ),
             color=self.bot.main_color
