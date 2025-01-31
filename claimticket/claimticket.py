@@ -21,9 +21,9 @@ class ClaimThread(commands.Cog):
         self._config_cache = {}
         self._cache_timestamp = 0
         self.thread_cooldowns = {}
-        self.channel_cache = {}  # Add channel cache
-        self.cache_lifetime = 300  # 5 minutes cache lifetime
-        self.thread_cd = 10  # 10 seconds thread cooldown
+        self.channel_cache = {}
+        self.cache_lifetime = 300  # 5 minutes
+        self.thread_cd = 10  # 10 seconds
         self.rate_limit_bucket = {}
         self.bucket_reset = {}
         check_reply.fail_msg = 'This thread has been claimed by another user.'
@@ -43,7 +43,7 @@ class ClaimThread(commands.Cog):
         }
 
     async def handle_rate_limit(self, ctx):
-        """Handle Discord rate limits properly"""
+        """Improved rate limit handling based on Discord's guidelines"""
         now = datetime.utcnow()
         bucket_key = f"{ctx.guild.id}:{ctx.channel.id}"
         
@@ -53,37 +53,57 @@ class ClaimThread(commands.Cog):
                 self.rate_limit_bucket.pop(key, None)
                 self.bucket_reset.pop(key, None)
         
-        # Check current bucket
-        if bucket_key in self.rate_limit_bucket:
-            if self.rate_limit_bucket[bucket_key] >= 5:  # Max 5 requests per 5 seconds per channel
-                if now < self.bucket_reset[bucket_key]:
-                    wait_time = (self.bucket_reset[bucket_key] - now).total_seconds()
-                    if wait_time > 0:
-                        await ctx.message.add_reaction('⏳')
-                        await asyncio.sleep(wait_time)
-                        await ctx.message.remove_reaction('⏳', self.bot.user)
-                    self.rate_limit_bucket[bucket_key] = 0
-            else:
-                self.rate_limit_bucket[bucket_key] += 1
-        else:
-            self.rate_limit_bucket[bucket_key] = 1
-            self.bucket_reset[bucket_key] = now + timedelta(seconds=5)
-
-    async def get_channel(self, channel_id: int):
-        """Get channel with rate limit handling"""
         try:
-            if channel := self.bot.get_channel(channel_id):
-                return channel
+            # Check current bucket
+            if bucket_key in self.rate_limit_bucket:
+                if self.rate_limit_bucket[bucket_key] >= 5:  # Max 5 requests per 5 seconds per channel
+                    if now < self.bucket_reset[bucket_key]:
+                        wait_time = (self.bucket_reset[bucket_key] - now).total_seconds()
+                        if wait_time > 0:
+                            await ctx.message.add_reaction('⏳')
+                            await asyncio.sleep(wait_time)
+                            try:
+                                await ctx.message.remove_reaction('⏳', self.bot.user)
+                            except:
+                                pass
+                        self.rate_limit_bucket[bucket_key] = 0
+                else:
+                    self.rate_limit_bucket[bucket_key] += 1
+            else:
+                self.rate_limit_bucket[bucket_key] = 1
+                self.bucket_reset[bucket_key] = now + timedelta(seconds=5)
                 
-            await self.handle_rate_limit(None)  # Add delay if needed
-            return await self.bot.fetch_channel(channel_id)
         except discord.HTTPException as e:
             if e.code == 429:  # Rate limit hit
                 retry_after = e.retry_after
                 await asyncio.sleep(retry_after)
+                return await self.handle_rate_limit(ctx)
+            raise
+
+    async def get_channel(self, channel_id: int):
+        """Get channel with improved caching and rate limit handling"""
+        # Try cache first
+        if channel_id in self.channel_cache:
+            channel, timestamp = self.channel_cache[channel_id]
+            if time.time() - timestamp < self.cache_lifetime:
+                return channel
+
+        try:
+            # Try get_channel first (no API call)
+            if channel := self.bot.get_channel(channel_id):
+                self.channel_cache[channel_id] = (channel, time.time())
+                return channel
+            
+            # If not found, make API call with rate limit handling
+            channel = await self.bot.fetch_channel(channel_id)
+            self.channel_cache[channel_id] = (channel, time.time())
+            return channel
+            
+        except discord.HTTPException as e:
+            if e.code == 429:
+                retry_after = e.retry_after
+                await asyncio.sleep(retry_after)
                 return await self.get_channel(channel_id)
-            return None
-        except (discord.NotFound, discord.Forbidden):
             return None
 
     async def clean_old_claims(self):
