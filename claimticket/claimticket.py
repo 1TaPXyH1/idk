@@ -25,6 +25,7 @@ class ClaimThread(commands.Cog):
         self.channel_cache = {}
         self.user_cache = {}
         self.cache_lifetime = 300  # 5 minutes
+        self.check_message_cache = {}  # Add this line
         
         # Track command usage per channel
         self.command_usage = {}
@@ -569,12 +570,22 @@ async def check_reply(ctx):
     if ctx.command.name not in reply_commands:
         return True
     
-    # Skip check if no thread attribute (shouldn't happen in thread-only commands)
+    # Skip check if no thread attribute
     if not hasattr(ctx, 'thread'):
         return True
-        
+
     try:
-        thread = await ctx.bot.get_cog('ClaimThread').db.find_one({
+        cog = ctx.bot.get_cog('ClaimThread')
+        channel_id = str(ctx.channel.id)
+        
+        # Check message cache to prevent spam
+        current_time = time.time()
+        if channel_id in cog.check_message_cache:
+            last_time = cog.check_message_cache[channel_id]
+            if current_time - last_time < 5:  # 5 second cooldown
+                return False
+                
+        thread = await cog.db.find_one({
             'thread_id': str(ctx.thread.channel.id), 
             'guild': str(ctx.bot.modmail_guild.id)
         })
@@ -585,7 +596,7 @@ async def check_reply(ctx):
             
         # Check for override permissions
         has_override = False
-        if config := await ctx.bot.get_cog('ClaimThread').db.find_one({'_id': 'config'}):
+        if config := await cog.db.find_one({'_id': 'config'}):
             override_roles = config.get('override_roles', [])
             member_roles = [role.id for role in ctx.author.roles]
             has_override = any(role_id in member_roles for role_id in override_roles)
@@ -598,17 +609,16 @@ async def check_reply(ctx):
         )
         
         if not can_reply:
-            # Store message in context to prevent multiple sends
-            if not hasattr(ctx, '_claim_check_failed'):
-                ctx._claim_check_failed = True
-                await ctx.send("This thread has been claimed by another user.", delete_after=10)
+            # Update cache and send message
+            cog.check_message_cache[channel_id] = current_time
+            await ctx.send(check_reply.fail_msg, delete_after=10)
             return False
             
         return True
         
     except Exception as e:
         print(f"Error in check_reply: {e}")
-        return True  # Allow on error to prevent lockouts
+        return True
 
 
 async def setup(bot):
