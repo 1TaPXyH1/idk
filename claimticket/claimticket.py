@@ -28,6 +28,11 @@ class ClaimThread(commands.Cog):
         self.thread_cd = 10  # 10 seconds
         self.rate_limit_bucket = {}
         self.bucket_reset = {}
+        
+        # Track invalid requests to avoid Cloudflare bans (10,000 per 10 minutes limit)
+        self.invalid_requests = {}
+        self.invalid_reset = {}
+        
         check_reply.fail_msg = 'This thread has been claimed by another user.'
         
         # Add cooldowns as instance variables
@@ -78,19 +83,43 @@ class ClaimThread(commands.Cog):
             raise error
 
     async def handle_rate_limit(self, ctx):
-        """Improved rate limit handling"""
-        now = datetime.utcnow().timestamp()
-        bucket = self.global_cooldown.get_bucket(ctx.message)
-        
-        if bucket.update_rate_limit(now):
-            await ctx.message.add_reaction('⏳')
-            await asyncio.sleep(bucket.per)  # Wait until rate resets
-            try:
+        """Handle Discord's rate limits properly"""
+        try:
+            # If we hit a 429, we need to wait the retry_after period
+            if hasattr(ctx, 'response') and ctx.response.status == 429:
+                retry_after = float(ctx.response.headers.get('Retry-After', 60))
+                is_global = ctx.response.headers.get('X-RateLimit-Global', False)
+                
+                if is_global:
+                    # Global rate limit (50 requests per second)
+                    await ctx.message.add_reaction('⏳')
+                    await asyncio.sleep(retry_after)
+                    await ctx.message.remove_reaction('⏳', self.bot.user)
+                    return False
+                    
+                # Handle shared rate limits
+                if ctx.response.headers.get('X-RateLimit-Scope') == 'shared':
+                    await ctx.message.add_reaction('⏳')
+                    await asyncio.sleep(retry_after)
+                    await ctx.message.remove_reaction('⏳', self.bot.user)
+                    return False
+                    
+            return True
+            
+        except discord.HTTPException as e:
+            if e.code == 429:  # Rate limit exceeded
+                retry_after = e.retry_after
+                await ctx.message.add_reaction('⏳')
+                # For Cloudflare bans (10 minute cooldown)
+                if retry_after > 300:  # If retry_after is more than 5 minutes
+                    await ctx.send(
+                        "Rate limit exceeded. Please wait 10 minutes before trying again.",
+                        delete_after=10
+                    )
+                await asyncio.sleep(retry_after)
                 await ctx.message.remove_reaction('⏳', self.bot.user)
-            except:
-                pass
-            return False
-        return True
+                return False
+            raise
 
     async def get_channel(self, channel_id: int):
         """Get channel with caching to reduce API calls"""
