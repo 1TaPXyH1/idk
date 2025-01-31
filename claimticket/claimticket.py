@@ -297,56 +297,6 @@ class ClaimThread(commands.Cog):
             except:
                 pass
 
-    @checks.has_permissions(PermissionLevel.SUPPORTER)
-    @checks.thread_only()
-    @commands.command()
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    async def addclaim(self, ctx, *, member: discord.Member):
-        """Adds another user to the thread claimers"""
-        if not await self.check_claimer(ctx, member.id):
-            return await ctx.reply(f"Limit reached, can't claim the thread.")
-
-        thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
-        if thread and str(ctx.author.id) in thread['claimers']:
-            await self.db.find_one_and_update({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)}, {'$addToSet': {'claimers': str(member.id)}})
-            await ctx.send('Added to claimers')
-
-    @checks.has_permissions(PermissionLevel.SUPPORTER)
-    @checks.thread_only()
-    @commands.command()
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    async def removeclaim(self, ctx, *, member: discord.Member):
-        """Removes a user from the thread claimers"""
-        thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
-        if thread and str(ctx.author.id) in thread['claimers']:
-            await self.db.find_one_and_update({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)}, {'$pull': {'claimers': str(member.id)}})
-            await ctx.send('Removed from claimers')
-
-    @checks.has_permissions(PermissionLevel.SUPPORTER)
-    @checks.thread_only()
-    @commands.command()
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    async def transferclaim(self, ctx, *, member: discord.Member):
-        """Removes all users from claimers and gives another member all control over thread"""
-        if not await self.check_claimer(ctx, member.id):
-            return await ctx.reply(f"Limit reached, can't claim the thread.")
-
-        thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
-        if thread and str(ctx.author.id) in thread['claimers']:
-            await self.db.find_one_and_update({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)}, {'$set': {'claimers': [str(member.id)]}})
-            await ctx.send('Added to claimers')
-
-    @checks.has_permissions(PermissionLevel.MODERATOR)
-    @checks.thread_only()
-    @commands.command()
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    async def overrideaddclaim(self, ctx, *, member: discord.Member):
-        """Allow mods to bypass claim thread check in add"""
-        thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
-        if thread:
-            await self.db.find_one_and_update({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)}, {'$addToSet': {'claimers': str(member.id)}})
-            await ctx.send('Added to claimers')
-
     @checks.has_permissions(PermissionLevel.MODERATOR)
     @commands.guild_only()
     @commands.cooldown(1, 5, commands.BucketType.user)
@@ -418,14 +368,6 @@ class ClaimThread(commands.Cog):
             await ctx.send(f'**Removed from by-pass roles**:\n`{role.name}`')
         else:
             await ctx.send(f'`{role.name}` is not in by-pass roles')
-
-    @checks.has_permissions(PermissionLevel.MODERATOR)
-    @checks.thread_only()
-    @commands.command()
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    async def overridereply(self, ctx, *, msg: str=""):
-        """Allow mods to bypass claim thread check in reply"""
-        await ctx.invoke(self.bot.get_command('reply'), msg=msg)
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @commands.cooldown(1, 5, commands.BucketType.user)
