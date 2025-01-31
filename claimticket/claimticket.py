@@ -330,21 +330,6 @@ class ClaimThread(commands.Cog):
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
     @commands.guild_only()
-    @commands.command()
-    async def claim_limit_(self, ctx, limit: int):
-        """
-        Set max threads a member can claim
-        0 = No limit
-        """
-        if await self.db.find_one({'_id': 'config'}):
-            await self.db.find_one_and_update({'_id': 'config'}, {'$set': {'limit': limit}})
-        else:
-            await self.db.insert_one({'_id': 'config', 'limit': limit})
-
-        await ctx.send(f'Set limit to {limit}')
-
-    @checks.has_permissions(PermissionLevel.MODERATOR)
-    @commands.guild_only()
     @commands.group(name='bypass', invoke_without_command=True)
     async def claim_bypass_(self, ctx):
         """Manage bypass roles to claim check"""
@@ -386,7 +371,6 @@ class ClaimThread(commands.Cog):
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
     @commands.guild_only()
-    @commands.group(name='bypass', invoke_without_command=True)
     @claim_bypass_.command(name='remove')
     async def claim_bypass_remove(self, ctx, role: discord.Role):
         """Remove a bypass role from claim check"""
