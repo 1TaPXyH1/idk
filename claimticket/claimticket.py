@@ -6,6 +6,7 @@ import discord
 from discord.ext import commands
 import time
 import asyncio
+from datetime import datetime, timedelta
 
 from core import checks
 from core.models import PermissionLevel
@@ -23,6 +24,8 @@ class ClaimThread(commands.Cog):
         self.channel_cache = {}  # Add channel cache
         self.cache_lifetime = 300  # 5 minutes cache lifetime
         self.thread_cd = 10  # 10 seconds thread cooldown
+        self.rate_limit_bucket = {}
+        self.bucket_reset = {}
         check_reply.fail_msg = 'This thread has been claimed by another user.'
         
         # Add checks for main commands only
@@ -39,18 +42,47 @@ class ClaimThread(commands.Cog):
             'thread_cooldown': 300    # 5 minutes per thread
         }
 
-    async def get_channel(self, channel_id: int):
-        """Get channel with caching to reduce API calls"""
-        now = time.time()
-        if channel_id in self.channel_cache:
-            channel, timestamp = self.channel_cache[channel_id]
-            if now - timestamp < self.cache_lifetime:
-                return channel
+    async def handle_rate_limit(self, ctx):
+        """Handle Discord rate limits properly"""
+        now = datetime.utcnow()
+        bucket_key = f"{ctx.guild.id}:{ctx.channel.id}"
         
+        # Clean old buckets
+        for key in list(self.bucket_reset.keys()):
+            if now > self.bucket_reset[key]:
+                self.rate_limit_bucket.pop(key, None)
+                self.bucket_reset.pop(key, None)
+        
+        # Check current bucket
+        if bucket_key in self.rate_limit_bucket:
+            if self.rate_limit_bucket[bucket_key] >= 5:  # Max 5 requests per 5 seconds per channel
+                if now < self.bucket_reset[bucket_key]:
+                    wait_time = (self.bucket_reset[bucket_key] - now).total_seconds()
+                    if wait_time > 0:
+                        await ctx.message.add_reaction('⏳')
+                        await asyncio.sleep(wait_time)
+                        await ctx.message.remove_reaction('⏳', self.bot.user)
+                    self.rate_limit_bucket[bucket_key] = 0
+            else:
+                self.rate_limit_bucket[bucket_key] += 1
+        else:
+            self.rate_limit_bucket[bucket_key] = 1
+            self.bucket_reset[bucket_key] = now + timedelta(seconds=5)
+
+    async def get_channel(self, channel_id: int):
+        """Get channel with rate limit handling"""
         try:
-            channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
-            self.channel_cache[channel_id] = (channel, now)
-            return channel
+            if channel := self.bot.get_channel(channel_id):
+                return channel
+                
+            await self.handle_rate_limit(None)  # Add delay if needed
+            return await self.bot.fetch_channel(channel_id)
+        except discord.HTTPException as e:
+            if e.code == 429:  # Rate limit hit
+                retry_after = e.retry_after
+                await asyncio.sleep(retry_after)
+                return await self.get_channel(channel_id)
+            return None
         except (discord.NotFound, discord.Forbidden):
             return None
 
@@ -739,9 +771,12 @@ class ClaimThread(commands.Cog):
                 pass
 
     async def handle_thread_cooldown(self, ctx):
-        """Handle cooldown for thread commands"""
+        """Handle thread cooldown with rate limit consideration"""
         if not ctx.thread:
             return True
+            
+        # Handle Discord rate limits first
+        await self.handle_rate_limit(ctx)
             
         current_time = time.time()
         thread_id = str(ctx.thread.channel.id)
