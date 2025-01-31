@@ -585,6 +585,7 @@ async def check_reply(ctx):
             if current_time - last_time < 5:  # 5 second cooldown
                 try:
                     await ctx.message.delete()  # Delete the attempted response
+                    await ctx.message.add_reaction('❌')
                 except:
                     pass
                 return False
@@ -613,13 +614,14 @@ async def check_reply(ctx):
         )
         
         if not can_reply:
-            # Update cache and send message
+            # Update cache and react with X
             cog.check_message_cache[channel_id] = current_time
             try:
-                await ctx.message.delete()  # Delete the attempted response
+                await ctx.message.add_reaction('❌')
+                await asyncio.sleep(0.5)  # Small delay before deletion
+                await ctx.message.delete()
             except:
                 pass
-            await ctx.send(check_reply.fail_msg, delete_after=5)  # Reduced to 5 seconds
             return False
             
         return True
