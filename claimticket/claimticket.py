@@ -570,7 +570,7 @@ async def check_reply(ctx):
         return True
         
     thread = await ctx.bot.get_cog('ClaimThread').db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(ctx.bot.modmail_guild.id)})
-    if thread and len(thread['claimers']) != 0:
+    if thread and len(thread.get('claimers', [])) != 0:
         has_override = False
         if config := await ctx.bot.get_cog('ClaimThread').db.find_one({'_id': 'config'}):
             # Check override roles
@@ -579,7 +579,12 @@ async def check_reply(ctx):
                 for role in override_roles:
                     if role in ctx.author.roles:
                         has_override = True
-        return ctx.author.bot or has_override or str(ctx.author.id) in thread['claimers']
+        
+        can_reply = ctx.author.bot or has_override or str(ctx.author.id) in thread.get('claimers', [])
+        if not can_reply:
+            # Send error message only once
+            await ctx.send("This thread has been claimed by another user.", delete_after=10)
+        return can_reply
     return True
 
 
