@@ -300,10 +300,12 @@ class ClaimThread(commands.Cog):
             await ctx.thread.channel.edit(name=new_name)
             await ctx.message.add_reaction('✅')
         except discord.HTTPException as e:
-            if e.code == 429:
+            if e.code == 429:  # Rate limit hit
                 await ctx.message.add_reaction('⏳')
-                return
-            await ctx.message.add_reaction('❌')
+                await asyncio.sleep(e.retry_after)
+                await self.rename(ctx, new_name=new_name)  # Retry
+            else:
+                await ctx.message.add_reaction('❌')
         except Exception:
             await ctx.message.add_reaction('❌')
 
