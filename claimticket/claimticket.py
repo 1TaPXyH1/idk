@@ -475,10 +475,27 @@ class ClaimThread(commands.Cog):
         }):
             stats['total'] += 1
             
-            if 'status' in doc and doc['status'] == 'closed':
+            # Check if channel still exists and is not closed
+            try:
+                channel = self.bot.get_channel(int(doc['thread_id']))
+                if channel and ('status' not in doc or doc['status'] != 'closed'):
+                    stats['active'] += 1
+                else:
+                    stats['closed'] += 1
+                    # Update status if channel doesn't exist
+                    if not channel and ('status' not in doc or doc['status'] != 'closed'):
+                        await self.db.find_one_and_update(
+                            {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                            {'$set': {'status': 'closed'}}
+                        )
+            except:
                 stats['closed'] += 1
-            else:
-                stats['active'] += 1
+                # Update status if there's an error
+                if 'status' not in doc or doc['status'] != 'closed':
+                    await self.db.find_one_and_update(
+                        {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                        {'$set': {'status': 'closed'}}
+                    )
 
         if stats['total'] == 0:
             embed = discord.Embed(
