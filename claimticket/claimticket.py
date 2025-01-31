@@ -177,9 +177,52 @@ class ClaimThread(commands.Cog):
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @checks.thread_only()
     @commands.command()
-    @commands.cooldown(1, 5, commands.BucketType.user)
+    async def claim(self, ctx):
+        """Claim a thread without renaming"""
+        if not await self.handle_rate_limit(ctx):
+            return
+
+        thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
+        has_active_claimers = thread and thread.get('claimers') and len(thread['claimers']) > 0
+        
+        if not has_active_claimers:
+            try:
+                # Only handle subscription
+                if str(ctx.thread.id) not in self.bot.config["subscriptions"]:
+                    self.bot.config["subscriptions"][str(ctx.thread.id)] = []
+                if ctx.author.mention not in self.bot.config["subscriptions"][str(ctx.thread.id)]:
+                    self.bot.config["subscriptions"][str(ctx.thread.id)].append(ctx.author.mention)
+                    await self.bot.config.update()
+
+                # Update database without renaming
+                if thread is None:
+                    await self.db.insert_one({
+                        'guild': str(self.bot.modmail_guild.id),
+                        'thread_id': str(ctx.thread.channel.id),
+                        'claimers': [str(ctx.author.id)],
+                        'status': 'open'
+                    })
+                else:
+                    await self.db.find_one_and_update(
+                        {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)},
+                        {'$set': {'claimers': [str(ctx.author.id)], 'status': 'open'}}
+                    )
+
+                embed = discord.Embed(
+                    color=self.bot.main_color,
+                    description=f"Successfully claimed the thread.\n{ctx.author.mention} is now subscribed to this thread."
+                )
+                await ctx.send(embed=embed)
+            except:
+                await ctx.message.add_reaction('❌')
+        else:
+            await ctx.message.add_reaction('❌')
+
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    @checks.thread_only()
+    @commands.command()
     async def unclaim(self, ctx):
-        """Unclaim a thread with proper rate limiting"""
+        """Unclaim a thread without renaming"""
         if not await self.handle_rate_limit(ctx):
             return
             
@@ -191,10 +234,7 @@ class ClaimThread(commands.Cog):
                     {'$pull': {'claimers': str(ctx.author.id)}}
                 )
                 
-                recipient_id = match_user_id(ctx.thread.channel.topic)
-                recipient = self.bot.get_user(recipient_id) or await self.bot.fetch_user(recipient_id)
-                await ctx.thread.channel.edit(name=recipient.name)
-                
+                # Only handle unsubscription
                 if ctx.author.mention in self.bot.config["subscriptions"].get(str(ctx.thread.id), []):
                     self.bot.config["subscriptions"][str(ctx.thread.id)].remove(ctx.author.mention)
                     await self.bot.config.update()
@@ -211,122 +251,16 @@ class ClaimThread(commands.Cog):
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @checks.thread_only()
-    @commands.group(name='claim', invoke_without_command=True)
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    async def claim_(self, ctx):
-        """Claim a thread with proper rate limiting"""
-        if not await self.handle_rate_limit(ctx):
-            return
-
-        if not ctx.invoked_subcommand:
-            if not await self.check_claimer(ctx, ctx.author.id):
-                await ctx.message.add_reaction('❌')
-                return
-
-            thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
-            has_active_claimers = thread and thread.get('claimers') and len(thread['claimers']) > 0
-            
-            if not has_active_claimers:
-                try:
-                    # Subscribe
-                    if str(ctx.thread.id) not in self.bot.config["subscriptions"]:
-                        self.bot.config["subscriptions"][str(ctx.thread.id)] = []
-                    if ctx.author.mention not in self.bot.config["subscriptions"][str(ctx.thread.id)]:
-                        self.bot.config["subscriptions"][str(ctx.thread.id)].append(ctx.author.mention)
-                        await self.bot.config.update()
-
-                    # Update name and database
-                    new_name = f"{ctx.author.display_name} claimed"
-                    await ctx.thread.channel.edit(name=new_name)
-                    
-                    if thread is None:
-                        await self.db.insert_one({
-                            'thread_id': str(ctx.thread.channel.id), 
-                            'guild': str(self.bot.modmail_guild.id), 
-                            'claimers': [str(ctx.author.id)]
-                        })
-                    else:
-                        await self.db.find_one_and_update(
-                            {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)},
-                            {
-                                '$set': {'claimers': [str(ctx.author.id)]},
-                                '$unset': {'status': ''}
-                            }
-                        )
-                    
-                    embed = discord.Embed(
-                        color=self.bot.main_color,
-                        description="Subscribed to thread.\nSuccessfully claimed the thread. Please respond to the case asap."
-                    )
-                    await ctx.send(embed=embed)
-                except:
-                    await ctx.message.add_reaction('❌')
-            else:
-                await ctx.message.add_reaction('❌')
-
-    @checks.has_permissions(PermissionLevel.SUPPORTER)
-    @checks.thread_only()
     @commands.command()
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    async def change(self, ctx, *, member: discord.Member):
-        """Change the claimer of the thread (Override permission required)"""
-        if not await self.handle_rate_limit(ctx):
-            return
-            
-        has_override = False
-        if config := await self.db.find_one({'_id': 'config'}):
-            if 'override_roles' in config:
-                override_roles = [ctx.guild.get_role(r) for r in config['override_roles'] if ctx.guild.get_role(r) is not None]
-                for role in override_roles:
-                    if role in ctx.author.roles:
-                        has_override = True
-                        break
-
-        if not has_override:
-            await ctx.message.add_reaction('❌')
-            return
-
-        try:
-            thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
-            if thread:
-                await self.db.find_one_and_update(
-                    {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)},
-                    {'$set': {'claimers': [str(member.id)]}}
-                )
-                
-                new_name = f"{member.display_name} claimed"
-                await ctx.thread.channel.edit(name=new_name)
-                
-                embed = discord.Embed(
-                    color=self.bot.main_color,
-                    description=f"Thread claimer changed to {member.mention}"
-                )
-                await ctx.send(embed=embed)
-            else:
-                await ctx.message.add_reaction('❌')
-        except:
-            await ctx.message.add_reaction('❌')
-
-    @checks.has_permissions(PermissionLevel.SUPPORTER)
-    @checks.thread_only()
-    @commands.command()
-    @commands.cooldown(1, 5, commands.BucketType.user)
     async def rename(self, ctx, *, new_name: str):
-        """Rename the current thread"""
+        """Rename the thread channel (optional command)"""
         if not await self.handle_rate_limit(ctx):
             return
             
         try:
             await ctx.thread.channel.edit(name=new_name)
             await ctx.message.add_reaction('✅')
-        except discord.HTTPException as e:
-            if e.code == 429:  # Rate limit hit
-                await ctx.message.add_reaction('⏳')
-                await asyncio.sleep(e.retry_after)
-                await self.rename(ctx, new_name=new_name)  # Retry
-            else:
-                await ctx.message.add_reaction('❌')
-        except Exception:
+        except:
             await ctx.message.add_reaction('❌')
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
