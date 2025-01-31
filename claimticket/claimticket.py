@@ -582,7 +582,6 @@ async def check_reply(ctx):
             last_time = cog.check_message_cache[channel_id]
             if current_time - last_time < 5:  # 5 second cooldown
                 try:
-                    await ctx.message.delete()  # Delete the attempted response
                     await ctx.message.add_reaction('❌')
                 except:
                     pass
@@ -612,12 +611,15 @@ async def check_reply(ctx):
         )
         
         if not can_reply:
-            # Update cache and react with X
+            # Update cache, send ephemeral message and add X reaction
             cog.check_message_cache[channel_id] = current_time
             try:
+                embed = discord.Embed(
+                    description="This thread has been claimed by another user.",
+                    color=discord.Color.red()
+                )
+                await ctx.send(embed=embed, ephemeral=True)
                 await ctx.message.add_reaction('❌')
-                await asyncio.sleep(0.5)  # Small delay before deletion
-                await ctx.message.delete()
             except:
                 pass
             return False
