@@ -30,8 +30,8 @@ class ClaimThread(commands.Cog):
         self.bucket_reset = {}
         check_reply.fail_msg = 'This thread has been claimed by another user.'
         
-        # Global cooldown for all commands (2 per 5 seconds per user)
-        self.bot.global_cooldown = CooldownMapping.from_cooldown(2, 5, BucketType.user)
+        # Add cooldowns as instance variables
+        self.global_cooldown = CooldownMapping.from_cooldown(2, 5, BucketType.user)
         self.user_cooldown = CooldownMapping.from_cooldown(1, 5, BucketType.user)
         
         # Add checks for main commands only
@@ -50,7 +50,7 @@ class ClaimThread(commands.Cog):
 
     async def cog_before_invoke(self, ctx):
         """Global cooldown check for all commands"""
-        bucket = self.bot.global_cooldown.get_bucket(ctx.message)
+        bucket = self.global_cooldown.get_bucket(ctx.message)
         retry_after = bucket.update_rate_limit()
         if retry_after:
             await ctx.message.add_reaction('⏳')
@@ -78,30 +78,17 @@ class ClaimThread(commands.Cog):
             raise error
 
     async def handle_rate_limit(self, ctx):
-        """Improved rate limit handling using CooldownMapping with exponential backoff"""
+        """Improved rate limit handling"""
         now = datetime.utcnow().timestamp()
+        bucket = self.global_cooldown.get_bucket(ctx.message)
         
-        # Check both global and user cooldowns
-        channel_bucket = self.global_cooldown.get_bucket(ctx.message)
-        user_bucket = self.user_cooldown.get_bucket(ctx.message)
-        
-        if channel_bucket.update_rate_limit(now) or user_bucket.update_rate_limit(now):
-            retries = 0
-            while retries < 5:  # Max retries
-                try:
-                    await ctx.message.add_reaction('⏳')
-                    wait_time = min(2 ** retries + random.uniform(0, 1), 10)
-                    await asyncio.sleep(wait_time)
-                    try:
-                        await ctx.message.remove_reaction('⏳', self.bot.user)
-                    except:
-                        pass
-                    return True
-                except discord.HTTPException as e:
-                    if e.code == 429:
-                        retries += 1
-                        continue
-                    raise
+        if bucket.update_rate_limit(now):
+            await ctx.message.add_reaction('⏳')
+            await asyncio.sleep(bucket.per)  # Wait until rate resets
+            try:
+                await ctx.message.remove_reaction('⏳', self.bot.user)
+            except:
+                pass
             return False
         return True
 
