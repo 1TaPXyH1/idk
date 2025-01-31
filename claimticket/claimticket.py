@@ -21,11 +21,12 @@ class ClaimThread(commands.Cog):
         self._cache_timestamp = 0
         self.thread_cooldowns = {}
         check_reply.fail_msg = 'This thread has been claimed by another user.'
-        self.bot.get_command('reply').add_check(check_reply)
-        self.bot.get_command('areply').add_check(check_reply)
-        self.bot.get_command('fareply').add_check(check_reply)
-        self.bot.get_command('freply').add_check(check_reply)
         
+        # Add checks for both commands and their aliases
+        for cmd_name in ['reply', 'r', 'areply', 'ar', 'freply', 'fr', 'fareply', 'far']:
+            if cmd := self.bot.get_command(cmd_name):
+                cmd.add_check(check_reply)
+
         # Add default config with fixed cooldowns
         self.default_config = {
             'limit': 0,
@@ -810,6 +811,12 @@ class ClaimThread(commands.Cog):
 
 
 async def check_reply(ctx):
+    """Check if user can reply to the thread"""
+    # Check if command is a reply command or its alias
+    reply_commands = ['reply', 'r', 'areply', 'ar', 'freply', 'fr', 'fareply', 'far']
+    if ctx.command.name not in reply_commands:
+        return True
+        
     thread = await ctx.bot.get_cog('ClaimThread').db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(ctx.bot.modmail_guild.id)})
     if thread and len(thread['claimers']) != 0:
         in_role = False
