@@ -40,7 +40,6 @@ class ClaimThread(commands.Cog):
         # Add default config with fixed cooldowns
         self.default_config = {
             'limit': 0,
-            'bypass_roles': [],
             'override_roles': [],
             'command_cooldown': 5,    # 5 seconds per user
             'thread_cooldown': 300    # 5 minutes per thread
@@ -68,7 +67,6 @@ class ClaimThread(commands.Cog):
         config = await self.db.find_one({'_id': 'config'}) or {}
         return {
             'limit': config.get('limit', self.default_config['limit']),
-            'bypass_roles': config.get('bypass_roles', self.default_config['bypass_roles']),
             'override_roles': config.get('override_roles', self.default_config['override_roles']),
             'command_cooldown': config.get('command_cooldown', self.default_config['command_cooldown']),
             'thread_cooldown': config.get('thread_cooldown', self.default_config['thread_cooldown'])
@@ -348,59 +346,6 @@ class ClaimThread(commands.Cog):
             except:
                 pass
 
-    @checks.has_permissions(PermissionLevel.MODERATOR)
-    @commands.guild_only()
-    @commands.group(name='bypass', invoke_without_command=True)
-    async def claim_bypass_(self, ctx):
-        """Manage bypass roles to claim check"""
-        if not ctx.invoked_subcommand:
-            if (roles_guild:= await self.db.find_one({'_id': 'config'})) and len(roles_guild['bypass_roles']) != 0:
-                added = ", ".join(f"`{ctx.guild.get_role(r).name}`" for r in roles_guild['bypass_roles'])
-                await ctx.send(f'By-pass roles: {added}')
-            else:
-                await ctx.send_help(ctx.command)
-
-    @checks.has_permissions(PermissionLevel.MODERATOR)
-    @commands.guild_only()
-    @claim_bypass_.command(name='add')
-    async def claim_bypass_add(self, ctx, *roles):
-        """Add bypass roles to claim check"""
-        bypass_roles = []
-        for rol in roles:
-            try:
-                role = await commands.RoleConverter().convert(ctx, rol)
-            except:
-                role = discord.utils.find(
-                    lambda r: r.name.lower() == rol.lower(), ctx.guild.roles
-                )
-            if role:
-                bypass_roles.append(role)
-
-        if len(bypass_roles) != 0:
-            if await self.db.find_one({'_id': 'config'}):
-                for role in bypass_roles:
-                    await self.db.find_one_and_update({'_id': 'config'}, {'$addToSet': {'bypass_roles': role.id}})
-            else:
-                await self.db.insert_one({'_id': 'config', 'bypass_roles': [r.id for r in bypass_roles]})
-            added = ", ".join(f"`{r.name}`" for r in bypass_roles)
-           
-        else:
-            added = "`None`"
-
-        await ctx.send(f'**Added to by-pass roles**:\n{added}')
-
-    @checks.has_permissions(PermissionLevel.MODERATOR)
-    @commands.guild_only()
-    @claim_bypass_.command(name='remove')
-    async def claim_bypass_remove(self, ctx, role: discord.Role):
-        """Remove a bypass role from claim check"""
-        roles_guild = await self.db.find_one({'_id': 'config'})
-        if roles_guild and role.id in roles_guild['bypass_roles']:
-            await self.db.find_one_and_update({'_id': 'config'}, {'$pull': {'bypass_roles': role.id}})
-            await ctx.send(f'**Removed from by-pass roles**:\n`{role.name}`')
-        else:
-            await ctx.send(f'`{role.name}` is not in by-pass roles')
-
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @commands.command(name="stats")
     async def claim_stats(self, ctx, member: discord.Member = None):
@@ -560,58 +505,6 @@ class ClaimThread(commands.Cog):
         limit_text = str(limit) if limit > 0 else "unlimited"
         await ctx.send(f"Claim limit set to {limit_text}")
 
-    @checks.has_permissions(PermissionLevel.MODERATOR)
-    @commands.guild_only()
-    @commands.group(name='override', invoke_without_command=True)
-    async def claim_override_(self, ctx):
-        """Manage override roles to claim check"""
-        if not ctx.invoked_subcommand:
-            if (roles_guild := await self.db.find_one({'_id': 'config'})) and len(roles_guild.get('override_roles', [])) != 0:
-                added = ", ".join(f"`{ctx.guild.get_role(r).name}`" for r in roles_guild['override_roles'])
-                await ctx.send(f'Override roles: {added}')
-            else:
-                await ctx.send_help(ctx.command)
-
-    @checks.has_permissions(PermissionLevel.MODERATOR)
-    @commands.guild_only()
-    @claim_override_.command(name='add')
-    async def claim_override_add(self, ctx, *roles):
-        """Add override roles to claim check"""
-        override_roles = []
-        for rol in roles:
-            try:
-                role = await commands.RoleConverter().convert(ctx, rol)
-            except:
-                role = discord.utils.find(
-                    lambda r: r.name.lower() == rol.lower(), ctx.guild.roles
-                )
-            if role:
-                override_roles.append(role)
-
-        if len(override_roles) != 0:
-            if await self.db.find_one({'_id': 'config'}):
-                for role in override_roles:
-                    await self.db.find_one_and_update({'_id': 'config'}, {'$addToSet': {'override_roles': role.id}})
-            else:
-                await self.db.insert_one({'_id': 'config', 'override_roles': [r.id for r in override_roles]})
-            added = ", ".join(f"`{r.name}`" for r in override_roles)
-        else:
-            added = "`None`"
-
-        await ctx.send(f'**Added to override roles**:\n{added}')
-
-    @checks.has_permissions(PermissionLevel.MODERATOR)
-    @commands.guild_only()
-    @claim_override_.command(name='remove')
-    async def claim_override_remove(self, ctx, role: discord.Role):
-        """Remove an override role from claim check"""
-        roles_guild = await self.db.find_one({'_id': 'config'})
-        if roles_guild and role.id in roles_guild.get('override_roles', []):
-            await self.db.find_one_and_update({'_id': 'config'}, {'$pull': {'override_roles': role.id}})
-            await ctx.send(f'**Removed from override roles**:\n`{role.name}`')
-        else:
-            await ctx.send(f'`{role.name}` is not in override roles')
-
 
 async def check_reply(ctx):
     """Check if user can reply to the thread"""
@@ -622,22 +515,15 @@ async def check_reply(ctx):
         
     thread = await ctx.bot.get_cog('ClaimThread').db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(ctx.bot.modmail_guild.id)})
     if thread and len(thread['claimers']) != 0:
-        in_role = False
         has_override = False
         if config := await ctx.bot.get_cog('ClaimThread').db.find_one({'_id': 'config'}):
-            # Check bypass roles
-            if 'bypass_roles' in config:
-                roles = [ctx.guild.get_role(r) for r in config['bypass_roles'] if ctx.guild.get_role(r) is not None]
-                for role in roles:
-                    if role in ctx.author.roles:
-                        in_role = True
             # Check override roles
             if 'override_roles' in config:
                 override_roles = [ctx.guild.get_role(r) for r in config['override_roles'] if ctx.guild.get_role(r) is not None]
                 for role in override_roles:
                     if role in ctx.author.roles:
                         has_override = True
-        return ctx.author.bot or in_role or has_override or str(ctx.author.id) in thread['claimers']
+        return ctx.author.bot or has_override or str(ctx.author.id) in thread['claimers']
     return True
 
 
