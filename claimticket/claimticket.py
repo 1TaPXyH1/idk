@@ -564,28 +564,51 @@ class ClaimThread(commands.Cog):
 
 async def check_reply(ctx):
     """Check if user can reply to the thread"""
-    # Check if command is a reply command
+    # Skip check if not a reply command
     reply_commands = ['reply', 'areply', 'freply', 'fareply']
     if ctx.command.name not in reply_commands:
         return True
+    
+    # Skip check if no thread attribute (shouldn't happen in thread-only commands)
+    if not hasattr(ctx, 'thread'):
+        return True
         
-    thread = await ctx.bot.get_cog('ClaimThread').db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(ctx.bot.modmail_guild.id)})
-    if thread and len(thread.get('claimers', [])) != 0:
+    try:
+        thread = await ctx.bot.get_cog('ClaimThread').db.find_one({
+            'thread_id': str(ctx.thread.channel.id), 
+            'guild': str(ctx.bot.modmail_guild.id)
+        })
+        
+        # If thread isn't claimed or doesn't exist, allow reply
+        if not thread or not thread.get('claimers'):
+            return True
+            
+        # Check for override permissions
         has_override = False
         if config := await ctx.bot.get_cog('ClaimThread').db.find_one({'_id': 'config'}):
-            # Check override roles
-            if 'override_roles' in config:
-                override_roles = [ctx.guild.get_role(r) for r in config['override_roles'] if ctx.guild.get_role(r) is not None]
-                for role in override_roles:
-                    if role in ctx.author.roles:
-                        has_override = True
+            override_roles = config.get('override_roles', [])
+            member_roles = [role.id for role in ctx.author.roles]
+            has_override = any(role_id in member_roles for role_id in override_roles)
         
-        can_reply = ctx.author.bot or has_override or str(ctx.author.id) in thread.get('claimers', [])
+        # Allow if user is bot, has override, or is claimer
+        can_reply = (
+            ctx.author.bot or 
+            has_override or 
+            str(ctx.author.id) in thread['claimers']
+        )
+        
         if not can_reply:
-            # Send error message only once
-            await ctx.send("This thread has been claimed by another user.", delete_after=10)
-        return can_reply
-    return True
+            # Store message in context to prevent multiple sends
+            if not hasattr(ctx, '_claim_check_failed'):
+                ctx._claim_check_failed = True
+                await ctx.send("This thread has been claimed by another user.", delete_after=10)
+            return False
+            
+        return True
+        
+    except Exception as e:
+        print(f"Error in check_reply: {e}")
+        return True  # Allow on error to prevent lockouts
 
 
 async def setup(bot):
