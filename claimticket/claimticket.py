@@ -524,18 +524,18 @@ class ClaimThread(commands.Cog):
         closure_rate = (stats['closed'] / stats['total'] * 100) if stats['total'] > 0 else 0
 
         embed = discord.Embed(
-            title="Claims Overview",
+            title="CLAIMS OVERVIEW                    📊",
+            description=(
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "ACTIVE         CLOSED         TOTAL\n"
+                f"   {stats['active']}             {stats['closed']}            {stats['total']}\n\n"
+                "CLOSURE RATE\n"
+                "⸻⸻⸻⸻⸻\n"
+                f"{closure_rate:.1f}%"
+            ),
             color=self.bot.main_color
         )
         
-        # Overall stats
-        embed.description = (
-            f"Active Claims: **{stats['active']}**\n"
-            f"Closed Claims: **{stats['closed']}**\n"
-            f"Total Claims: **{stats['total']}**\n"
-            f"Closure Rate: **{closure_rate:.1f}%**"
-        )
-            
         await ctx.send(embed=embed)
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
