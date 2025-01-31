@@ -140,38 +140,60 @@ class ClaimThread(commands.Cog):
         return None  # Don't fetch if not in cache
 
     @commands.command(name="lb")
-    async def claim_leaderboard(self, ctx):
-        """Show claim leaderboard with minimal API calls"""
-        if not await self.handle_rate_limit(ctx):
-            return
-            
+    async def claim_leaderboard(self, ctx, days: int = None):
+        """Show claim leaderboard
+        
+        Usage:
+        !lb [days] - Show leaderboard for specified days (optional)
+        """
         claims = {}
+        total_claims = {}
+        
+        # Calculate cutoff date if days specified
+        cutoff_date = None
+        if days:
+            cutoff_date = datetime.utcnow() - timedelta(days=days)
+        
         async for doc in self.db.find(
             {
                 'guild': str(self.bot.modmail_guild.id),
-                'status': {'$ne': 'closed'},
                 'claimers': {'$exists': True}
             }
         ):
+            # Skip if before cutoff date
+            if cutoff_date and 'created_at' in doc:
+                created_at = datetime.fromisoformat(doc['created_at'])
+                if created_at < cutoff_date:
+                    continue
+                    
             for claimer in doc['claimers']:
-                claims[claimer] = claims.get(claimer, 0) + 1
+                total_claims[claimer] = total_claims.get(claimer, 0) + 1
+                if 'status' not in doc or doc['status'] != 'closed':
+                    claims[claimer] = claims.get(claimer, 0) + 1
 
-        sorted_claims = sorted(claims.items(), key=lambda x: x[1], reverse=True)[:10]
+        if not total_claims:
+            embed = discord.Embed(
+                title=f"Claim Leaderboard {f'- Past {days} days' if days else '- All Time'}",
+                description="No claims found",
+                color=self.bot.main_color
+            )
+            return await ctx.send(embed=embed)
+
+        sorted_claims = sorted(total_claims.items(), key=lambda x: x[1], reverse=True)[:10]
         
         embed = discord.Embed(
-            title="Claim Leaderboard",
+            title=f"Claim Leaderboard {f'- Past {days} days' if days else '- All Time'}",
             color=self.bot.main_color
         )
         
+        description = []
         for i, (user_id, claim_count) in enumerate(sorted_claims, 1):
             user = await self.get_user(int(user_id))
             name = user.name if user else f"User {user_id}"
-            embed.add_field(
-                name=f"{i}. {name}",
-                value=f"Claims: {claim_count}",
-                inline=False
-            )
-                
+            active = claims.get(user_id, 0)
+            description.append(f"`{i}.` **{name}**\n└ Total: {claim_count} | Active: {active}")
+
+        embed.description = "\n".join(description)
         await ctx.send(embed=embed)
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
@@ -179,9 +201,6 @@ class ClaimThread(commands.Cog):
     @commands.command()
     async def claim(self, ctx):
         """Claim a thread without renaming"""
-        if not await self.handle_rate_limit(ctx):
-            return
-
         thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
         has_active_claimers = thread and thread.get('claimers') and len(thread['claimers']) > 0
         
@@ -223,9 +242,6 @@ class ClaimThread(commands.Cog):
     @commands.command()
     async def unclaim(self, ctx):
         """Unclaim a thread without renaming"""
-        if not await self.handle_rate_limit(ctx):
-            return
-            
         thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
         if thread and str(ctx.author.id) in thread['claimers']:
             try:
@@ -254,9 +270,6 @@ class ClaimThread(commands.Cog):
     @commands.command()
     async def rename(self, ctx, *, new_name: str):
         """Rename the thread channel (optional command)"""
-        if not await self.handle_rate_limit(ctx):
-            return
-            
         try:
             await ctx.thread.channel.edit(name=new_name)
             await ctx.message.add_reaction('✅')
@@ -265,7 +278,6 @@ class ClaimThread(commands.Cog):
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @commands.command()
-    @commands.cooldown(1, 5, commands.BucketType.user)
     async def claims(self, ctx):
         """Check which channels you have claimed"""
         cursor = self.db.find({'guild':str(self.bot.modmail_guild.id)})
@@ -320,7 +332,6 @@ class ClaimThread(commands.Cog):
     @checks.has_permissions(PermissionLevel.MODERATOR)
     @commands.guild_only()
     @commands.group(name='bypass', invoke_without_command=True)
-    @commands.cooldown(1, 5, commands.BucketType.user)
     async def claim_bypass_(self, ctx):
         """Manage bypass roles to claim check"""
         if not ctx.invoked_subcommand:
@@ -333,7 +344,6 @@ class ClaimThread(commands.Cog):
     @checks.has_permissions(PermissionLevel.MODERATOR)
     @commands.guild_only()
     @claim_bypass_.command(name='add')
-    @commands.cooldown(1, 5, commands.BucketType.user)
     async def claim_bypass_add(self, ctx, *roles):
         """Add bypass roles to claim check"""
         bypass_roles = []
@@ -363,7 +373,6 @@ class ClaimThread(commands.Cog):
     @checks.has_permissions(PermissionLevel.MODERATOR)
     @commands.guild_only()
     @claim_bypass_.command(name='remove')
-    @commands.cooldown(1, 5, commands.BucketType.user)
     async def claim_bypass_remove(self, ctx, role: discord.Role):
         """Remove a bypass role from claim check"""
         roles_guild = await self.db.find_one({'_id': 'config'})
@@ -375,11 +384,8 @@ class ClaimThread(commands.Cog):
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @commands.command(name="stats")
-    @commands.cooldown(1, 5, commands.BucketType.user)
     async def claim_stats(self, ctx, member: discord.Member = None):
-        """View comprehensive claim statistics for yourself or another member
-        
-        Shows both active and historical claims."""
+        """View comprehensive claim statistics"""
         target = member or ctx.author
         
         # Get all claims for this user
@@ -455,292 +461,157 @@ class ClaimThread(commands.Cog):
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
     @commands.command(name="overview")
-    @commands.cooldown(1, 5, commands.BucketType.user)
     async def claim_overview(self, ctx):
-        """Show claim overview with reduced API calls"""
-        cursor = self.db.find({'guild': str(self.bot.modmail_guild.id)})
-        active_claims = []
+        """Show comprehensive claims overview"""
+        stats = {
+            'active': 0,
+            'closed': 0,
+            'total': 0,
+            'by_user': {}
+        }
         
-        async for doc in cursor:
-            if 'claimers' in doc and ('status' not in doc or doc['status'] != 'closed'):
-                channel = await self.get_channel(int(doc['thread_id']))
-                if channel:
-                    for claimer_id in doc['claimers']:
-                        user = await self.get_user(int(claimer_id))
-                        if user:
-                            active_claims.append((channel.name, user.name))
+        async for doc in self.db.find({
+            'guild': str(self.bot.modmail_guild.id),
+            'claimers': {'$exists': True}
+        }):
+            stats['total'] += 1
+            
+            # Track user stats
+            for claimer_id in doc['claimers']:
+                if claimer_id not in stats['by_user']:
+                    stats['by_user'][claimer_id] = {'active': 0, 'closed': 0}
+                
+                if 'status' in doc and doc['status'] == 'closed':
+                    stats['closed'] += 1
+                    stats['by_user'][claimer_id]['closed'] += 1
+                else:
+                    stats['active'] += 1
+                    stats['by_user'][claimer_id]['active'] += 1
+
+        if stats['total'] == 0:
+            embed = discord.Embed(
+                title="Claims Overview",
+                description="No claims found",
+                color=self.bot.main_color
+            )
+            return await ctx.send(embed=embed)
+
+        # Calculate closure percentage
+        closure_rate = (stats['closed'] / stats['total'] * 100) if stats['total'] > 0 else 0
 
         embed = discord.Embed(
-            title="Active Claims Overview",
+            title="Claims Overview",
             color=self.bot.main_color
         )
         
-        for thread_name, claimer_name in active_claims:
-            embed.add_field(
-                name=thread_name,
-                value=f"Claimed by: {claimer_name}",
-                inline=False
-            )
-            
-        await ctx.send(embed=embed)
-
-    async def get_cached_config(self):
-        """Get cached config or fetch new if expired"""
-        now = time.time()
-        if now - self._cache_timestamp > 300:  # 5 minute cache
-            self._config_cache = await self.get_config()
-            self._cache_timestamp = now
-        return self._config_cache
-
-    async def check_claimer(self, ctx, claimer_id):
-        """
-        Check if a user can claim more threads
-        
-        Parameters
-        ----------
-        ctx : Context
-            The command context
-        claimer_id : int
-            The ID of the user attempting to claim
-            
-        Returns
-        -------
-        bool
-            True if user can claim more threads, False otherwise
-        """
-        config = await self.db.find_one({'_id': 'config'})
-        if config and 'limit' in config:
-            if config['limit'] == 0:
-                return True
-        else:
-            raise commands.BadArgument(f"Set Limit first. `{ctx.prefix}claim limit`")
-
-        cursor = self.db.find({'guild':str(self.bot.modmail_guild.id)})
-        count = 0
-        async for doc in cursor:
-            if 'claimers' in doc and str(claimer_id) in doc['claimers']:
-                if 'status' not in doc or doc['status'] != 'closed':
-                    try:
-                        channel = ctx.guild.get_channel(int(doc['thread_id'])) or await self.bot.fetch_channel(int(doc['thread_id']))
-                        if channel:
-                            count += 1
-                    except discord.NotFound:
-                        await self.db.find_one_and_update(
-                            {'thread_id': doc['thread_id'], 'guild': doc['guild']},
-                            {'$set': {'status': 'closed'}}
-                        )
-
-        return count < config['limit']
-
-    @checks.has_permissions(PermissionLevel.MODERATOR)
-    @commands.group(name='override', invoke_without_command=True)
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    async def claim_override_(self, ctx):
-        """Manage override roles that can reply to any thread regardless of claim status"""
-        if not ctx.invoked_subcommand:
-            config = await self.get_config()
-            override_roles = config.get('override_roles', [])
-            
-            embed = discord.Embed(
-                title="Override Roles Configuration",
-                color=self.bot.main_color,
-                timestamp=ctx.message.created_at
-            )
-            
-            if override_roles:
-                role_mentions = []
-                invalid_roles = []
-                for role_id in override_roles:
-                    role = ctx.guild.get_role(role_id)
-                    if role:
-                        role_mentions.append(f"• {role.mention} (ID: {role.id})")
-                    else:
-                        invalid_roles.append(role_id)
-                        
-                # Clean up invalid roles
-                if invalid_roles:
-                    await self.db.find_one_and_update(
-                        {'_id': 'config'},
-                        {'$pull': {'override_roles': {'$in': invalid_roles}}}
-                    )
-                
-                embed.description = "**Current Override Roles:**\n" + "\n".join(role_mentions)
-                embed.add_field(
-                    name="Usage",
-                    value="• `override add <role>` - Add role to override list\n"
-                          "• `override remove <role>` - Remove role from override list",
-                    inline=False
-                )
-            else:
-                embed.description = "No override roles configured."
-                embed.add_field(
-                    name="Setup",
-                    value="Use `override add <role>` to add roles that can bypass claim restrictions.",
-                    inline=False
-                )
-            
-            await ctx.send(embed=embed)
-
-    @checks.has_permissions(PermissionLevel.MODERATOR)
-    @claim_override_.command(name='add')
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    async def claim_override_add(self, ctx, *roles):
-        """Add roles that can reply to any thread regardless of claim status"""
-        if not roles:
-            embed = discord.Embed(
-                title="Error",
-                description="Please specify at least one role to add.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-            
-        override_roles = []
-        invalid_roles = []
-        
-        for role_input in roles:
-            try:
-                # Try to convert the input to a role
-                role = await commands.RoleConverter().convert(ctx, role_input)
-                override_roles.append(role)
-            except commands.RoleNotFound:
-                invalid_roles.append(role_input)
-        
-        embed = discord.Embed(
-            title="Add Override Roles",
-            color=self.bot.main_color,
-            timestamp=ctx.message.created_at
+        # Overall stats
+        embed.add_field(
+            name="Overall Statistics",
+            value=f"Active Claims: **{stats['active']}**\n"
+                  f"Closed Claims: **{stats['closed']}**\n"
+                  f"Total Claims: **{stats['total']}**\n"
+                  f"Closure Rate: **{closure_rate:.1f}%**",
+            inline=False
         )
         
-        if override_roles:
-            # Update database
-            for role in override_roles:
-                await self.db.find_one_and_update(
-                    {'_id': 'config'},
-                    {'$addToSet': {'override_roles': role.id}},
-                    upsert=True
-                )
+        # Per-user stats
+        for user_id, user_stats in stats['by_user'].items():
+            user = await self.get_user(int(user_id))
+            name = user.name if user else f"User {user_id}"
+            total = user_stats['active'] + user_stats['closed']
+            user_closure_rate = (user_stats['closed'] / total * 100) if total > 0 else 0
             
             embed.add_field(
-                name="Added Successfully",
-                value="\n".join(f"• {role.mention}" for role in override_roles),
-                inline=False
+                name=name,
+                value=f"Active: **{user_stats['active']}**\n"
+                      f"Closed: **{user_stats['closed']}**\n"
+                      f"Total: **{total}**\n"
+                      f"Closure Rate: **{user_closure_rate:.1f}%**",
+                inline=True
             )
-        
-        if invalid_roles:
-            embed.add_field(
-                name="Invalid Roles",
-                value="\n".join(f"• {role}" for role in invalid_roles),
-                inline=False
-            )
-            
-        if not override_roles and not invalid_roles:
-            embed.description = "No valid roles provided"
-            embed.color = discord.Color.red()
             
         await ctx.send(embed=embed)
-
-    @checks.has_permissions(PermissionLevel.MODERATOR)
-    @claim_override_.command(name='remove')
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    async def claim_override_remove(self, ctx, *, role: discord.Role):
-        """Remove a role from the override list"""
-        config = await self.get_config()
-        override_roles = config.get('override_roles', [])
-        
-        embed = discord.Embed(
-            title="Remove Override Role",
-            color=self.bot.main_color,
-            timestamp=ctx.message.created_at
-        )
-        
-        if role.id in override_roles:
-            await self.db.find_one_and_update(
-                {'_id': 'config'},
-                {'$pull': {'override_roles': role.id}}
-            )
-            embed.description = f"Successfully removed {role.mention} from override roles"
-            embed.color = discord.Color.green()
-        else:
-            embed.description = f"{role.mention} is not in the override roles list"
-            embed.color = discord.Color.red()
-        
-        await ctx.send(embed=embed)
-
-    async def remove_cooldown_reaction(self, ctx, seconds):
-        """Remove cooldown reaction and message after specified time"""
-        await asyncio.sleep(seconds)
-        try:
-            await ctx.message.delete()  # Delete the command message after cooldown
-        except:
-            pass
-
-    async def handle_thread_cooldown(self, ctx):
-        """Handle thread cooldown with rate limit consideration"""
-        if not ctx.thread:
-            return True
-            
-        # Handle Discord rate limits first
-        await self.handle_rate_limit(ctx)
-            
-        current_time = time.time()
-        thread_id = str(ctx.thread.channel.id)
-        
-        # Clean old cooldowns
-        for tid in list(self.thread_cooldowns.keys()):
-            if current_time - self.thread_cooldowns[tid] > self.thread_cd:
-                del self.thread_cooldowns[tid]
-        
-        if thread_id in self.thread_cooldowns:
-            if current_time - self.thread_cooldowns[thread_id] < self.thread_cd:
-                await ctx.message.add_reaction('⏳')
-                return False
-        
-        self.thread_cooldowns[thread_id] = current_time
-        return True
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
     @commands.group(name='claimconfig', invoke_without_command=True)
-    @commands.cooldown(1, 5, commands.BucketType.user)
     async def claim_config(self, ctx):
-        """Configure claim plugin settings"""
+        """Configure claim limit"""
         if ctx.invoked_subcommand is None:
             config = await self.get_config()
             embed = discord.Embed(
-                title="Claim Plugin Configuration",
+                title="Claim Configuration",
+                description=f"Current claim limit: **{config['limit']}**\n"
+                          f"Use `{ctx.prefix}claimconfig limit <number>` to change",
                 color=self.bot.main_color
             )
-            embed.add_field(name="Command Cooldown", value=f"{config['command_cooldown']} seconds", inline=True)
-            embed.add_field(name="Thread Cooldown", value=f"{config['thread_cooldown']} seconds", inline=True)
-            embed.add_field(name="Claim Limit", value=str(config['limit']), inline=True)
             await ctx.send(embed=embed)
 
-    @claim_config.command(name='cooldown')
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    async def set_command_cooldown(self, ctx, seconds: int):
-        """Set the cooldown for claim commands"""
-        if seconds < 0:
-            return await ctx.send("Cooldown cannot be negative")
+    @claim_config.command(name='limit')
+    async def set_claim_limit(self, ctx, limit: int):
+        """Set the maximum number of claims per user (0 for unlimited)"""
+        if limit < 0:
+            return await ctx.send("Limit cannot be negative")
             
         await self.db.find_one_and_update(
             {'_id': 'config'},
-            {'$set': {'command_cooldown': seconds}},
+            {'$set': {'limit': limit}},
             upsert=True
         )
-        await ctx.send(f"Command cooldown set to {seconds} seconds")
+        
+        limit_text = str(limit) if limit > 0 else "unlimited"
+        await ctx.send(f"Claim limit set to {limit_text}")
 
-    @claim_config.command(name='threadcooldown')
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    async def set_thread_cooldown(self, ctx, seconds: int):
-        """Set the cooldown for thread operations"""
-        if seconds < 0:
-            return await ctx.send("Cooldown cannot be negative")
-            
-        await self.db.find_one_and_update(
-            {'_id': 'config'},
-            {'$set': {'thread_cooldown': seconds}},
-            upsert=True
-        )
-        await ctx.send(f"Thread cooldown set to {seconds} seconds")
+    @checks.has_permissions(PermissionLevel.MODERATOR)
+    @commands.guild_only()
+    @commands.group(name='override', invoke_without_command=True)
+    async def claim_override_(self, ctx):
+        """Manage override roles to claim check"""
+        if not ctx.invoked_subcommand:
+            if (roles_guild := await self.db.find_one({'_id': 'config'})) and len(roles_guild.get('override_roles', [])) != 0:
+                added = ", ".join(f"`{ctx.guild.get_role(r).name}`" for r in roles_guild['override_roles'])
+                await ctx.send(f'Override roles: {added}')
+            else:
+                await ctx.send_help(ctx.command)
+
+    @checks.has_permissions(PermissionLevel.MODERATOR)
+    @commands.guild_only()
+    @claim_override_.command(name='add')
+    async def claim_override_add(self, ctx, *roles):
+        """Add override roles to claim check"""
+        override_roles = []
+        for rol in roles:
+            try:
+                role = await commands.RoleConverter().convert(ctx, rol)
+            except:
+                role = discord.utils.find(
+                    lambda r: r.name.lower() == rol.lower(), ctx.guild.roles
+                )
+            if role:
+                override_roles.append(role)
+
+        if len(override_roles) != 0:
+            if await self.db.find_one({'_id': 'config'}):
+                for role in override_roles:
+                    await self.db.find_one_and_update({'_id': 'config'}, {'$addToSet': {'override_roles': role.id}})
+            else:
+                await self.db.insert_one({'_id': 'config', 'override_roles': [r.id for r in override_roles]})
+            added = ", ".join(f"`{r.name}`" for r in override_roles)
+        else:
+            added = "`None`"
+
+        await ctx.send(f'**Added to override roles**:\n{added}')
+
+    @checks.has_permissions(PermissionLevel.MODERATOR)
+    @commands.guild_only()
+    @claim_override_.command(name='remove')
+    async def claim_override_remove(self, ctx, role: discord.Role):
+        """Remove an override role from claim check"""
+        roles_guild = await self.db.find_one({'_id': 'config'})
+        if roles_guild and role.id in roles_guild.get('override_roles', []):
+            await self.db.find_one_and_update({'_id': 'config'}, {'$pull': {'override_roles': role.id}})
+            await ctx.send(f'**Removed from override roles**:\n`{role.name}`')
+        else:
+            await ctx.send(f'`{role.name}` is not in override roles')
 
 
 async def check_reply(ctx):
