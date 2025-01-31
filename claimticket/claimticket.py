@@ -188,7 +188,7 @@ class ClaimThread(commands.Cog):
 
         if not total_claims:
             embed = discord.Embed(
-                title="CLAIM LEADERBOARD",
+                title="Claims Leaderboard",
                 description="No claims found",
                 color=self.bot.main_color
             )
@@ -196,7 +196,7 @@ class ClaimThread(commands.Cog):
 
         sorted_claims = sorted(total_claims.items(), key=lambda x: x[1], reverse=True)[:10]
         
-        description = [""]
+        description = []
         for i, (user_id, claim_count) in enumerate(sorted_claims, 1):
             user = await self.get_user(int(user_id))
             name = user.name if user else f"User {user_id}"
@@ -204,11 +204,11 @@ class ClaimThread(commands.Cog):
             
             claim_text = "claim" if claim_count == 1 else "claims"
             description.append(
-                f"`{i}.` {name:<15} ⦿ {claim_count} {claim_text} ({active} active)"
+                f"{i}.  {name}     |  {claim_count} {claim_text}  |  {active} active"
             )
 
         embed = discord.Embed(
-            title=f"CLAIM LEADERBOARD{' - Past ' + str(days) + ' days' if days else ''}",
+            title="Claims Leaderboard",
             description="\n".join(description),
             color=self.bot.main_color
         )
