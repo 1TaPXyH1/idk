@@ -431,46 +431,32 @@ class ClaimThread(commands.Cog):
         
         total_claims = len(active_claims) + len(closed_claims)
         
-        embed = discord.Embed(
-            title=f"Claim Statistics for {target.display_name}",
-            color=self.bot.main_color,
-            timestamp=ctx.message.created_at
-        )
-        
-        embed.add_field(
-            name="Active Claims",
-            value=str(len(active_claims)),
-            inline=True
-        )
-        
-        embed.add_field(
-            name="Closed Claims",
-            value=str(len(closed_claims)),
-            inline=True
-        )
-        
-        embed.add_field(
-            name="Total Claims Ever",
-            value=str(total_claims),
-            inline=True
-        )
-        
         # Get claim limit
         config = await self.db.find_one({'_id': 'config'})
         limit = config.get('limit', 0) if config else 0
-        limit_text = str(limit) if limit > 0 else "No limit"
         
-        embed.add_field(
-            name="Current Claim Limit", 
-            value=limit_text,
-            inline=True
+        # Create progress bars
+        def create_progress_bar(value, max_value, length=5):
+            filled = int((value / max_value) * length) if max_value > 0 else 0
+            return '[' + '▰' * filled + '▱' * (length - filled) + ']'
+        
+        active_bar = create_progress_bar(len(active_claims), limit) if limit > 0 else '[▱▱▱▱▱]'
+        closed_bar = create_progress_bar(len(closed_claims), total_claims) if total_claims > 0 else '[▱▱▱▱▱]'
+        
+        embed = discord.Embed(
+            title=f"Claim Statistics for {target.display_name}",
+            description=(
+                "**CLAIMS USAGE**\n"
+                f"Active Claims   {active_bar}  {len(active_claims)}/{limit}\n"
+                f"Closed Claims   {closed_bar}  {len(closed_claims)}/{total_claims}\n"
+                f"Total Claims: {total_claims}\n\n"
+                "**LIMIT STATUS**\n"
+                f"Claim Limit: {limit}"
+            ),
+            color=self.bot.main_color
         )
         
-        embed.add_field(
-            name="Claims Available", 
-            value=str(limit - len(active_claims)) if limit > 0 else "∞",
-            inline=True
-        )
+        embed.set_author(name=target.display_name, icon_url=target.avatar.url if target.avatar else None)
         
         await ctx.send(embed=embed)
 
