@@ -505,6 +505,62 @@ class ClaimThread(commands.Cog):
         limit_text = str(limit) if limit > 0 else "unlimited"
         await ctx.send(f"Claim limit set to {limit_text}")
 
+    @checks.has_permissions(PermissionLevel.MODERATOR)
+    @commands.group(name='override', invoke_without_command=True)
+    async def claim_override(self, ctx):
+        """Manage override roles for claims"""
+        if ctx.invoked_subcommand is None:
+            config = await self.get_config()
+            
+            override_roles = []
+            for role_id in config['override_roles']:
+                if role := ctx.guild.get_role(role_id):
+                    override_roles.append(role.mention)
+            
+            embed = discord.Embed(
+                title="Claim Override Roles",
+                description="Roles that can override claimed tickets:\n" + 
+                           ("\n".join(override_roles) if override_roles else "No roles set"),
+                color=self.bot.main_color
+            )
+            await ctx.send(embed=embed)
+
+    @claim_override.command(name='add')
+    async def override_add(self, ctx, *, role: discord.Role):
+        """Add a role to override claims"""
+        config = await self.db.find_one({'_id': 'config'}) or {}
+        override_roles = config.get('override_roles', [])
+        
+        if role.id in override_roles:
+            return await ctx.send("That role is already an override role")
+            
+        override_roles.append(role.id)
+        await self.db.find_one_and_update(
+            {'_id': 'config'},
+            {'$set': {'override_roles': override_roles}},
+            upsert=True
+        )
+        
+        await ctx.send(f"Added {role.mention} to override roles")
+
+    @claim_override.command(name='remove')
+    async def override_remove(self, ctx, *, role: discord.Role):
+        """Remove a role from override claims"""
+        config = await self.db.find_one({'_id': 'config'}) or {}
+        override_roles = config.get('override_roles', [])
+        
+        if role.id not in override_roles:
+            return await ctx.send("That role is not an override role")
+            
+        override_roles.remove(role.id)
+        await self.db.find_one_and_update(
+            {'_id': 'config'},
+            {'$set': {'override_roles': override_roles}},
+            upsert=True
+        )
+        
+        await ctx.send(f"Removed {role.mention} from override roles")
+
 
 async def check_reply(ctx):
     """Check if user can reply to the thread"""
