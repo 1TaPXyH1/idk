@@ -20,10 +20,13 @@ class ClaimThread(commands.Cog):
         self._config_cache = {}
         self._cache_timestamp = 0
         self.thread_cooldowns = {}
+        self.channel_cache = {}  # Add channel cache
+        self.cache_lifetime = 300  # 5 minutes cache lifetime
+        self.thread_cd = 10  # 10 seconds thread cooldown
         check_reply.fail_msg = 'This thread has been claimed by another user.'
         
-        # Add checks for both commands and their aliases
-        for cmd_name in ['reply', 'r', 'areply', 'ar', 'freply', 'fr', 'fareply', 'far']:
+        # Add checks for main commands only
+        for cmd_name in ['reply', 'areply', 'freply', 'fareply']:
             if cmd := self.bot.get_command(cmd_name):
                 cmd.add_check(check_reply)
 
@@ -35,6 +38,38 @@ class ClaimThread(commands.Cog):
             'command_cooldown': 5,    # 5 seconds per user
             'thread_cooldown': 300    # 5 minutes per thread
         }
+
+    async def get_channel(self, channel_id: int):
+        """Get channel with caching to reduce API calls"""
+        now = time.time()
+        if channel_id in self.channel_cache:
+            channel, timestamp = self.channel_cache[channel_id]
+            if now - timestamp < self.cache_lifetime:
+                return channel
+        
+        try:
+            channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+            self.channel_cache[channel_id] = (channel, now)
+            return channel
+        except (discord.NotFound, discord.Forbidden):
+            return None
+
+    async def clean_old_claims(self):
+        """Clean up claims for non-existent channels"""
+        cursor = self.db.find({'guild': str(self.bot.modmail_guild.id)})
+        async for doc in cursor:
+            if 'thread_id' in doc:
+                channel = await self.get_channel(int(doc['thread_id']))
+                if not channel and ('status' not in doc or doc['status'] != 'closed'):
+                    await self.db.find_one_and_update(
+                        {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                        {'$set': {'status': 'closed'}}
+                    )
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Clean up old claims when bot starts"""
+        await self.clean_old_claims()
 
     async def check_claimer(self, ctx, claimer_id):
         """
@@ -94,7 +129,6 @@ class ClaimThread(commands.Cog):
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @checks.thread_only()
     @commands.command()
-    @commands.cooldown(1, 5, commands.BucketType.user)
     async def unclaim(self, ctx):
         """Unclaim a thread"""
         if not await self.handle_thread_cooldown(ctx):
@@ -129,7 +163,6 @@ class ClaimThread(commands.Cog):
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @checks.thread_only()
     @commands.group(name='claim', invoke_without_command=True)
-    @commands.cooldown(1, 5, commands.BucketType.user)
     async def claim_(self, ctx):
         """Claim a thread"""
         if not await self.handle_thread_cooldown(ctx):
@@ -184,7 +217,6 @@ class ClaimThread(commands.Cog):
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @checks.thread_only()
     @commands.command()
-    @commands.cooldown(1, 5, commands.BucketType.user)
     async def change(self, ctx, *, member: discord.Member):
         """Change the claimer of the thread (Override permission required)"""
         if not await self.handle_thread_cooldown(ctx):
@@ -227,7 +259,6 @@ class ClaimThread(commands.Cog):
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @checks.thread_only()
     @commands.command()
-    @commands.cooldown(1, 5, commands.BucketType.user)
     async def rename(self, ctx, *, new_name: str):
         """Rename the current thread"""
         if not await self.handle_thread_cooldown(ctx):
@@ -246,7 +277,6 @@ class ClaimThread(commands.Cog):
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @commands.command()
-    @commands.cooldown(1, 5, commands.BucketType.user)
     async def claims(self, ctx):
         """Check which channels you have claimed"""
         cursor = self.db.find({'guild':str(self.bot.modmail_guild.id)})
@@ -300,7 +330,6 @@ class ClaimThread(commands.Cog):
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
     @commands.guild_only()
-    @commands.cooldown(1, 5, commands.BucketType.user)
     @commands.command()
     async def claim_limit_(self, ctx, limit: int):
         """
@@ -316,7 +345,6 @@ class ClaimThread(commands.Cog):
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
     @commands.guild_only()
-    @commands.cooldown(1, 5, commands.BucketType.user)
     @commands.group(name='bypass', invoke_without_command=True)
     async def claim_bypass_(self, ctx):
         """Manage bypass roles to claim check"""
@@ -329,7 +357,6 @@ class ClaimThread(commands.Cog):
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
     @commands.guild_only()
-    @commands.cooldown(1, 5, commands.BucketType.user)
     @claim_bypass_.command(name='add')
     async def claim_bypass_add(self, ctx, *roles):
         """Add bypass roles to claim check"""
@@ -359,7 +386,7 @@ class ClaimThread(commands.Cog):
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
     @commands.guild_only()
-    @commands.cooldown(1, 5, commands.BucketType.user)
+    @commands.group(name='bypass', invoke_without_command=True)
     @claim_bypass_.command(name='remove')
     async def claim_bypass_remove(self, ctx, role: discord.Role):
         """Remove a bypass role from claim check"""
@@ -371,7 +398,6 @@ class ClaimThread(commands.Cog):
             await ctx.send(f'`{role.name}` is not in by-pass roles')
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
-    @commands.cooldown(1, 5, commands.BucketType.user)
     @commands.command(name="stats")
     async def claim_stats(self, ctx, member: discord.Member = None):
         """View comprehensive claim statistics for yourself or another member
@@ -451,7 +477,6 @@ class ClaimThread(commands.Cog):
         await ctx.send(embed=embed)
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
-    @commands.cooldown(1, 5, commands.BucketType.user)
     @commands.command(name="lb")
     async def claim_leaderboard(self, ctx):
         """View the top 10 supporters by all-time claims including closed claims"""
@@ -515,7 +540,6 @@ class ClaimThread(commands.Cog):
         await ctx.send(embed=embed)
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
-    @commands.cooldown(1, 5, commands.BucketType.user)
     @commands.command(name="overview")
     async def claim_overview(self, ctx):
         """View overview of claim system statistics"""
@@ -582,8 +606,6 @@ class ClaimThread(commands.Cog):
         }
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
-    @commands.guild_only()
-    @commands.cooldown(1, 5, commands.BucketType.user)
     @commands.group(name='override', invoke_without_command=True)
     async def claim_override_(self, ctx):
         """Manage override roles that can reply to any thread regardless of claim status"""
@@ -632,8 +654,7 @@ class ClaimThread(commands.Cog):
             await ctx.send(embed=embed)
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
-    @commands.guild_only()
-    @commands.cooldown(1, 5, commands.BucketType.user)
+    @commands.group(name='override', invoke_without_command=True)
     @claim_override_.command(name='add')
     async def claim_override_add(self, ctx, *roles):
         """Add roles that can reply to any thread regardless of claim status
@@ -695,8 +716,7 @@ class ClaimThread(commands.Cog):
         await ctx.send(embed=embed)
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
-    @commands.guild_only()
-    @commands.cooldown(1, 5, commands.BucketType.user)
+    @commands.group(name='override', invoke_without_command=True)
     @claim_override_.command(name='remove')
     async def claim_override_remove(self, ctx, *, role: discord.Role):
         """Remove a role from the override list
@@ -744,28 +764,25 @@ class ClaimThread(commands.Cog):
             except:
                 pass
 
-    async def thread_command_cooldown(self, ctx):
-        """Check if thread is on cooldown"""
+    async def handle_thread_cooldown(self, ctx):
+        """Handle cooldown for thread commands"""
         if not ctx.thread:
             return True
             
         current_time = time.time()
         thread_id = str(ctx.thread.channel.id)
         
-        # Check if thread is on cooldown (5 minutes)
+        # Clean old cooldowns
+        for tid in list(self.thread_cooldowns.keys()):
+            if current_time - self.thread_cooldowns[tid] > self.thread_cd:
+                del self.thread_cooldowns[tid]
+        
         if thread_id in self.thread_cooldowns:
-            if current_time - self.thread_cooldowns[thread_id] < 300:  # 300 seconds = 5 minutes
+            if current_time - self.thread_cooldowns[thread_id] < self.thread_cd:
+                await ctx.message.add_reaction('⏳')
                 return False
         
         self.thread_cooldowns[thread_id] = current_time
-        return True
-
-    async def handle_thread_cooldown(self, ctx):
-        """Handle cooldown for thread commands"""
-        if not await self.thread_command_cooldown(ctx):
-            await ctx.message.add_reaction('⏳')
-            asyncio.create_task(self.remove_cooldown_reaction(ctx, config['thread_cooldown']))
-            return False
         return True
 
     @checks.has_permissions(PermissionLevel.MODERATOR)
@@ -812,8 +829,8 @@ class ClaimThread(commands.Cog):
 
 async def check_reply(ctx):
     """Check if user can reply to the thread"""
-    # Check if command is a reply command or its alias
-    reply_commands = ['reply', 'r', 'areply', 'ar', 'freply', 'fr', 'fareply', 'far']
+    # Check if command is a reply command
+    reply_commands = ['reply', 'areply', 'freply', 'fareply']
     if ctx.command.name not in reply_commands:
         return True
         
