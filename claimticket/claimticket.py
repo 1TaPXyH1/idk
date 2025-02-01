@@ -667,6 +667,33 @@ class ClaimThread(commands.Cog):
             'total_claims': total_claims
         }
 
+    async def track_ticket_closure(self, user_id):
+        """
+        Track ticket closure and sync stats with Mod Bot
+        
+        :param user_id: Discord user ID of the ticket closer
+        """
+        try:
+            # Get current user stats
+            user_stats = await self.get_user_stats(user_id)
+            
+            # Increment total tickets
+            user_stats['total_claims'] = user_stats.get('total_claims', 0) + 1
+            
+            # Reset active claims
+            user_stats['active_claims'] = 0
+            
+            # Send updated stats to webhook
+            await self.send_stats_to_webhook(user_id, user_stats)
+            
+            print(f"Tracked ticket closure for user {user_id}")
+            print(f"Updated stats: {user_stats}")
+        
+        except Exception as e:
+            print(f"Error tracking ticket closure: {e}")
+            import traceback
+            traceback.print_exc()
+
     @commands.group(name="claimsync")
     @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
     async def claims_sync_config(self, ctx):
