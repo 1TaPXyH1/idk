@@ -598,12 +598,18 @@ class ClaimThread(commands.Cog):
                     }
                 }
                 
+                print(f"Sending payload: {payload}")  # Debug print
+                
                 async with session.post(self.sync_webhook_url, json=payload) as response:
+                    response_text = await response.text()
+                    print(f"Response Status: {response.status}")
+                    print(f"Response Text: {response_text}")
+                    
                     if response.status == 200:
                         print(f"Successfully sent stats for user {user_id}")
                         return True
                     else:
-                        print(f"Failed to send stats. Status: {response.status}")
+                        print(f"Failed to send stats. Status: {response.status}, Text: {response_text}")
                         return False
         
         except Exception as e:
