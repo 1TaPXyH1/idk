@@ -9,6 +9,7 @@ import asyncio
 from datetime import datetime, timedelta
 from discord.ext.commands import CooldownMapping, BucketType
 import random
+import aiohttp
 
 from core import checks
 from core.models import PermissionLevel
@@ -26,6 +27,7 @@ class ClaimThread(commands.Cog):
         self.user_cache = {}
         self.cache_lifetime = 300  # 5 minutes
         self.check_message_cache = {}
+        self.sync_webhook_url = None
         
         # Track command usage per channel
         self.command_usage = {}
@@ -248,6 +250,13 @@ class ClaimThread(commands.Cog):
                     description=f"Successfully claimed the thread.\n{ctx.author.mention} is now subscribed to this thread."
                 )
                 await ctx.send(embed=embed)
+                
+                # Sync stats after successful claim
+                try:
+                    stats = await self.get_user_stats(ctx.author.id)
+                    await self.send_stats_to_webhook(ctx.author.id, stats)
+                except Exception as e:
+                    print(f"Stats sync error in claim: {e}")
             except:
                 await ctx.message.add_reaction('❌')
         else:
@@ -276,6 +285,13 @@ class ClaimThread(commands.Cog):
                     description=f"Removed from claimers.\n{ctx.author.mention} is now unsubscribed from this thread."
                 )
                 await ctx.send(embed=embed)
+                
+                # Sync stats after successful unclaim
+                try:
+                    stats = await self.get_user_stats(ctx.author.id)
+                    await self.send_stats_to_webhook(ctx.author.id, stats)
+                except Exception as e:
+                    print(f"Stats sync error in unclaim: {e}")
             except:
                 await ctx.message.add_reaction('❌')
         else:
@@ -509,10 +525,10 @@ class ClaimThread(commands.Cog):
     async def claim_override(self, ctx):
         """Manage override roles for claims"""
         if ctx.invoked_subcommand is None:
-            config = await self.get_config()
+            config = await self.db.find_one({'_id': 'config'})
             
             override_roles = []
-            for role_id in config['override_roles']:
+            for role_id in config.get('override_roles', []):
                 if role := ctx.guild.get_role(role_id):
                     override_roles.append(role.mention)
             
@@ -559,6 +575,114 @@ class ClaimThread(commands.Cog):
         )
         
         await ctx.send(f"Removed {role.mention} from override roles")
+
+    async def send_stats_to_webhook(self, user_id, stats):
+        """
+        Send user's claim statistics to webhook
+        
+        :param user_id: Discord user ID
+        :param stats: Dictionary of claim statistics
+        """
+        if not self.sync_webhook_url:
+            print("Webhook URL not configured")
+            return False
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                payload = {
+                    'user_id': str(user_id),
+                    'stats': {
+                        'active_claims': stats.get('active_claims', 0),
+                        'total_claims': stats.get('total_claims', 0),
+                        'timestamp': datetime.now().isoformat()
+                    }
+                }
+                
+                async with session.post(self.sync_webhook_url, json=payload) as response:
+                    if response.status == 200:
+                        print(f"Successfully sent stats for user {user_id}")
+                        return True
+                    else:
+                        print(f"Failed to send stats. Status: {response.status}")
+                        return False
+        
+        except Exception as e:
+            print(f"Webhook sync error: {e}")
+            return False
+
+    async def get_user_stats(self, user_id):
+        """
+        Aggregate claim statistics for a user
+        
+        :param user_id: Discord user ID
+        :return: Dictionary of user's claim statistics
+        """
+        active_claims = 0
+        total_claims = 0
+        
+        # Query database for user's claims
+        cursor = self.db.find({
+            'guild': str(self.bot.modmail_guild.id),
+            'claimers': str(user_id)
+        })
+        
+        async for doc in cursor:
+            total_claims += 1
+            
+            # Check if claim is active
+            if 'status' not in doc or doc['status'] != 'closed':
+                active_claims += 1
+        
+        return {
+            'active_claims': active_claims,
+            'total_claims': total_claims
+        }
+
+    @commands.group(name="claimsync")
+    @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
+    async def claims_sync_config(self, ctx):
+        """Configure claims synchronization webhook"""
+        if ctx.invoked_subcommand is None:
+            current_url = self.sync_webhook_url or "Not configured"
+            embed = discord.Embed(
+                title="Claims Sync Webhook",
+                description=f"Current Webhook URL: {current_url}",
+                color=discord.Color.blue()
+            )
+            await ctx.send(embed=embed)
+
+    @claims_sync_config.command(name="set")
+    async def set_sync_webhook(self, ctx, webhook_url: str):
+        """Set the webhook URL for claims synchronization"""
+        try:
+            # Validate webhook URL (optional)
+            async with aiohttp.ClientSession() as session:
+                async with session.get(webhook_url) as response:
+                    if response.status != 200:
+                        return await ctx.send("❌ Invalid webhook URL")
+            
+            # Set webhook URL
+            self.sync_webhook_url = webhook_url
+            await ctx.send("✅ Webhook URL set successfully!")
+        
+        except Exception as e:
+            await ctx.send(f"❌ Error setting webhook: {e}")
+
+    @commands.command(name="testsync")
+    @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
+    async def test_sync(self, ctx):
+        """Manually trigger a stats sync test"""
+        try:
+            stats = await self.get_user_stats(ctx.author.id)
+            result = await self.send_stats_to_webhook(ctx.author.id, stats)
+            
+            if result:
+                await ctx.send("✅ Test sync successful!")
+            else:
+                await ctx.send("❌ Test sync failed")
+        
+        except Exception as e:
+            await ctx.send(f"❌ Sync test error: {e}")
 
 
 async def check_reply(ctx):
