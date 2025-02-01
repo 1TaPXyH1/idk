@@ -627,7 +627,8 @@ class ClaimThread(commands.Cog):
                     print(f"Response Status: {response.status}")
                     print(f"Response Text: {response_text}")
                     
-                    if response.status == 200:
+                    # Consider 200 and 204 as successful responses
+                    if response.status in [200, 204]:
                         print(f"Successfully sent stats for user {user_id}")
                         return True
                     else:
@@ -784,4 +785,3 @@ async def check_reply(ctx):
 
 
 async def setup(bot):
-    await bot.add_cog(ClaimThread(bot))
