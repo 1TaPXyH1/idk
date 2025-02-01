@@ -646,26 +646,40 @@ class ClaimThread(commands.Cog):
         :param user_id: Discord user ID
         :return: Dictionary of user's claim statistics
         """
-        active_claims = 0
-        total_claims = 0
-        
-        # Query database for user's claims
-        cursor = self.db.find({
-            'guild': str(self.bot.modmail_guild.id),
-            'claimers': str(user_id)
-        })
-        
-        async for doc in cursor:
-            total_claims += 1
+        try:
+            # Convert user_id to string
+            user_id = str(user_id)
             
-            # Check if claim is active
-            if 'status' not in doc or doc['status'] != 'closed':
-                active_claims += 1
+            # Fetch all claims for this user
+            claims_cursor = await self.db.find({
+                'claimers': user_id,
+                'status': {'$ne': 'closed'}
+            })
+            
+            # Convert cursor to list
+            claims = await claims_cursor.to_list(length=None)
+            
+            # Count active claims and total unique claims
+            active_claims = len(claims)
+            
+            # Check if this is the first claim
+            total_claims_cursor = await self.db.find({
+                'claimers': user_id
+            })
+            total_unique_claims = await total_claims_cursor.to_list(length=None)
+            total_claims = len(total_unique_claims)
+            
+            return {
+                'active_claims': active_claims,
+                'total_claims': total_claims
+            }
         
-        return {
-            'active_claims': active_claims,
-            'total_claims': total_claims
-        }
+        except Exception as e:
+            print(f"Error getting user stats for {user_id}: {e}")
+            return {
+                'active_claims': 0,
+                'total_claims': 0
+            }
 
     async def track_ticket_closure(self, user_id):
         """
