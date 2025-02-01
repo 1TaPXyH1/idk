@@ -589,18 +589,40 @@ class ClaimThread(commands.Cog):
         
         try:
             async with aiohttp.ClientSession() as session:
-                payload = {
-                    'user_id': str(user_id),
-                    'stats': {
-                        'active_claims': stats.get('active_claims', 0),
-                        'total_claims': stats.get('total_claims', 0),
-                        'timestamp': datetime.now().isoformat()
+                # Prepare payload with both content and embeds
+                webhook_payload = {
+                    'content': f"ModMail Stats Sync for User {user_id}",
+                    'embeds': [{
+                        'title': 'ModMail Ticket Statistics',
+                        'fields': [
+                            {
+                                'name': 'Active Claims',
+                                'value': str(stats.get('active_claims', 0)),
+                                'inline': True
+                            },
+                            {
+                                'name': 'Total Claims',
+                                'value': str(stats.get('total_claims', 0)),
+                                'inline': True
+                            }
+                        ],
+                        'footer': {
+                            'text': f'Synced at {datetime.now().isoformat()}'
+                        }
+                    }],
+                    'json': {
+                        'user_id': str(user_id),
+                        'stats': {
+                            'active_claims': stats.get('active_claims', 0),
+                            'total_claims': stats.get('total_claims', 0),
+                            'timestamp': datetime.now().isoformat()
+                        }
                     }
                 }
                 
-                print(f"Sending payload: {payload}")  # Debug print
+                print(f"Sending webhook payload: {webhook_payload}")
                 
-                async with session.post(self.sync_webhook_url, json=payload) as response:
+                async with session.post(self.sync_webhook_url, json=webhook_payload) as response:
                     response_text = await response.text()
                     print(f"Response Status: {response.status}")
                     print(f"Response Text: {response_text}")
