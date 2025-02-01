@@ -785,3 +785,4 @@ async def check_reply(ctx):
 
 
 async def setup(bot):
+    await bot.add_cog(ClaimThread(bot))
