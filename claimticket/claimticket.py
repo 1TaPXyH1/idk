@@ -109,11 +109,16 @@ class ClaimThread(commands.Cog):
         self.mongo_db_name = 'Tickets'
         
         try:
-            # Create Motor client for direct MongoDB access
+            # Create Motor client for direct MongoDB access with enhanced connection settings
             self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(
                 self.mongo_uri, 
                 serverSelectionTimeoutMS=5000,  # 5 second timeout
-                connectTimeoutMS=5000           # 5 second connection timeout
+                connectTimeoutMS=5000,           # 5 second connection timeout
+                socketTimeoutMS=5000,            # Socket timeout
+                maxPoolSize=10,                  # Connection pool size
+                minPoolSize=1,                   # Minimum connections in pool
+                retryWrites=True,                # Retry write operations
+                appName='ModmailTicketPlugin'    # Descriptive app name
             )
             
             # Test connection
@@ -127,8 +132,21 @@ class ClaimThread(commands.Cog):
             # Perform a simple connection test
             async def test_connection():
                 try:
+                    # Ping the database
                     await self.mongo_db.command('ping')
-                    print("✅ MongoDB Connection Successful")
+                    
+                    # Log additional connection details
+                    client_info = await self.mongo_db.command('buildInfo')
+                    print(f"✅ MongoDB Connection Successful")
+                    print(f"   🔌 MongoDB Version: {client_info.get('version', 'Unknown')}")
+                    print(f"   📂 Database: {self.mongo_db.name}")
+                    
+                    # Optional: Log collection stats
+                    for collection_name in ['ticket_claims', 'ticket_stats', 'plugin_configs']:
+                        collection = self.mongo_db[collection_name]
+                        count = await collection.count_documents({})
+                        print(f"   📊 {collection_name}: {count} documents")
+                
                 except Exception as e:
                     print(f"❌ MongoDB Connection Test Failed: {e}")
             
@@ -679,26 +697,30 @@ class ClaimThread(commands.Cog):
         
         await ctx.send(f"Removed {role.mention} from override roles")
 
-    async def update_ticket_stats(self, user_id):
+    async def update_ticket_stats(self, thread, closer):
         """
         Update ticket statistics when a thread is closed
         
-        :param user_id: ID of the user closing the ticket
-        :return: Updated ticket count
+        Args:
+            thread: The closed thread
+            closer: The user who closed the thread
         """
         try:
-            # Atomically update ticket stats
-            result = await self.ticket_stats_collection.find_one_and_update(
-                {'user_id': str(user_id)},
-                {'$inc': {'closed_tickets': 1}},
-                upsert=True,
-                return_document=True
-            )
+            # Prepare stats document
+            stats_doc = {
+                'thread_id': str(thread.channel.id),
+                'guild_id': str(thread.guild.id),
+                'closed_by': str(closer.id) if closer else None,
+                'closed_at': datetime.utcnow(),
+                'duration': (datetime.utcnow() - thread.created_at).total_seconds(),
+                'status': 'closed'
+            }
             
-            return result.get('closed_tickets', 1)
+            # Insert or update ticket stats
+            await self.ticket_stats_collection.insert_one(stats_doc)
+        
         except Exception as e:
             print(f"Error updating ticket stats: {e}")
-            return 0
 
     @commands.command(name="show_ticket_stats")
     @checks.has_permissions(PermissionLevel.SUPPORTER)
@@ -727,17 +749,56 @@ class ClaimThread(commands.Cog):
                 await ctx.send("No ticket stats available.")
 
     @commands.Cog.listener()
-    async def on_thread_close(self, thread):
+    async def on_thread_close(self, *args, **kwargs):
         """
-        Automatically update ticket stats when a thread is closed
+        Handle thread closure and clean up ticket claims
+        
+        This method is called when a thread is closed and should:
+        1. Remove the claim for the closed thread
+        2. Update ticket stats
+        3. Perform any necessary cleanup
         """
-        # Assuming thread object has a closer attribute with user ID
-        if hasattr(thread, 'closer') and thread.closer:
-            closer_id = thread.closer.id
-            closed_count = await self.update_ticket_stats(closer_id)
+        try:
+            # Extract relevant information from arguments
+            # Modmail might pass different arguments, so we use flexible unpacking
+            thread = None
+            closer = None
             
-            # Optional: Log or notify about ticket closure
-            print(f"User {closer_id} closed a ticket. Total closed tickets: {closed_count}")
+            # Try to extract thread and closer from different possible argument positions
+            if len(args) >= 1:
+                thread = args[0]
+            if len(args) >= 2:
+                closer = args[1]
+            
+            # If thread is not found in positional args, check kwargs
+            if thread is None:
+                thread = kwargs.get('thread')
+            if closer is None:
+                closer = kwargs.get('closer')
+            
+            # If we can't find a thread, log and return
+            if thread is None:
+                print("on_thread_close: No thread found to process")
+                return
+            
+            # Remove claim for this thread
+            claim_filter = {
+                'thread_id': str(thread.channel.id),
+                'guild_id': str(thread.guild.id)
+            }
+            
+            # Delete the claim document
+            await self.ticket_claims_collection.delete_one(claim_filter)
+            
+            # Optional: Log thread closure
+            print(f"Thread {thread.channel.id} closed. Claim removed.")
+            
+            # Update ticket stats if possible
+            if closer:
+                await self.update_ticket_stats(thread, closer)
+        
+        except Exception as e:
+            print(f"Error in on_thread_close: {e}")
 
     @commands.command(name="sync_ticket_stats")
     @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
