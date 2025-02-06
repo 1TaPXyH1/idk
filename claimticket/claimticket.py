@@ -307,7 +307,7 @@ class ClaimThread(commands.Cog):
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @checks.thread_only()
     @commands.command()
-    async def claim(self, ctx):
+    async def thread_claim(self, ctx):
         """Claim a thread without renaming"""
         thread = await self.ticket_claims_collection.find_one({'thread_id': str(ctx.thread.channel.id), 'guild_id': str(self.bot.modmail_guild.id)})
         has_active_claimers = thread and thread.get('claimers') and len(thread['claimers']) > 0
@@ -348,7 +348,7 @@ class ClaimThread(commands.Cog):
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @checks.thread_only()
     @commands.command()
-    async def unclaim(self, ctx):
+    async def thread_unclaim(self, ctx):
         """Unclaim a thread without renaming"""
         thread = await self.ticket_claims_collection.find_one({'thread_id': str(ctx.thread.channel.id), 'guild_id': str(self.bot.modmail_guild.id)})
         if thread and str(ctx.author.id) in thread['claimers']:
@@ -386,7 +386,7 @@ class ClaimThread(commands.Cog):
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @commands.command()
-    async def claims(self, ctx):
+    async def thread_claims(self, ctx):
         """Check which channels you have claimed"""
         cursor = self.ticket_claims_collection.find({'guild_id':str(self.bot.modmail_guild.id)})
         active_channels = []
@@ -911,9 +911,9 @@ class ClaimThread(commands.Cog):
             
             return filename
 
-    @commands.command(name="claim")
+    @commands.command(name="thread_claim")
     @checks.has_permissions(PermissionLevel.SUPPORTER)
-    async def claim_thread(self, ctx):
+    async def thread_claim(self, ctx):
         """
         Claim the current thread
         Prevents other supporters from replying
@@ -973,9 +973,9 @@ class ClaimThread(commands.Cog):
         })
         return active_claims
 
-    @commands.command(name="unclaim")
+    @commands.command(name="thread_unclaim")
     @checks.has_permissions(PermissionLevel.SUPPORTER)
-    async def unclaim_thread(self, ctx):
+    async def thread_unclaim(self, ctx):
         """
         Unclaim the current thread
         Allows other supporters to claim and reply
@@ -1021,6 +1021,36 @@ class ClaimThread(commands.Cog):
         )
         
         await ctx.send(f"Claim limit set to {limit} threads.")
+
+    @commands.command(name="thread_claims")
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    async def thread_claims(self, ctx):
+        """Check which channels you have claimed"""
+        cursor = self.ticket_claims_collection.find({'guild_id':str(self.bot.modmail_guild.id)})
+        active_channels = []
+        
+        async for doc in cursor:
+            try:
+                if str(ctx.author.id) in doc.get('claimers', []):
+                    channel = self.bot.get_channel(int(doc['thread_id']))
+                    if channel:
+                        active_channels.append(channel)
+                    else:
+                        await self.ticket_claims_collection.find_one_and_update(
+                            {'thread_id': doc['thread_id'], 'guild_id': doc['guild_id']},
+                            {'$set': {'status': 'closed'}}
+                        )
+            except discord.NotFound:
+                await self.ticket_claims_collection.find_one_and_update(
+                    {'thread_id': doc['thread_id'], 'guild_id': doc['guild_id']},
+                    {'$set': {'status': 'closed'}}
+                )
+        
+        if active_channels:
+            channel_list = "\n".join(channel.mention for channel in active_channels)
+            await ctx.send(f"Your claimed threads:\n{channel_list}")
+        else:
+            await ctx.send("You have no active claimed threads.")
 
 async def setup(bot):
     """
