@@ -9,11 +9,16 @@ import asyncio
 from datetime import datetime, timedelta
 from discord.ext.commands import CooldownMapping, BucketType
 import random
-import pandas as pd
-import aiohttp
 import os
 from dotenv import load_dotenv
 import motor.motor_asyncio
+
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
+    pd = None
 
 load_dotenv()
 
@@ -26,8 +31,10 @@ class ClaimThread(commands.Cog):
     """Allows supporters to claim thread by sending claim in the thread channel"""
     def __init__(self, bot):
         self.bot = bot
-        self.mongo_uri = os.getenv('MONGODB_URI')
-        self.mongo_db_name = os.getenv('MONGODB_DATABASE', 'modmail_shared_db')
+        
+        # MongoDB Configuration
+        self.mongo_uri = os.getenv('MONGODB_URI', 'mongodb://localhost:27017')
+        self.mongo_db_name = os.getenv('MONGODB_DATABASE', 'Tickets')
         
         # Create Motor client
         self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(self.mongo_uri)
@@ -35,6 +42,8 @@ class ClaimThread(commands.Cog):
         
         # Ticket stats collection
         self.ticket_stats_collection = self.mongo_db['ticket_stats']
+        
+        self.pandas_available = PANDAS_AVAILABLE
         
         self._config_cache = {}
         self._cache_timestamp = 0
@@ -605,7 +614,13 @@ class ClaimThread(commands.Cog):
             })
         
         # Create DataFrame
-        df = pd.DataFrame(ticket_data)
+        if self.pandas_available:
+            df = pd.DataFrame(ticket_data)
+        else:
+            csv_content = "User ID,Thread ID,Status,Claimed At\n"
+            for ticket in ticket_data:
+                csv_content += f"{ticket.get('user_id', '')},{ticket.get('thread_id', '')},{ticket.get('status', '')},{ticket.get('claimed_at', '')}\n"
+            return csv_content
         
         # Generate unique filename
         filename = f"claimed_tickets_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
