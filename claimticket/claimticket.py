@@ -9,6 +9,13 @@ import asyncio
 from datetime import datetime, timedelta
 from discord.ext.commands import CooldownMapping, BucketType
 import random
+import pandas as pd
+import aiohttp
+import os
+from dotenv import load_dotenv
+import motor.motor_asyncio
+
+load_dotenv()
 
 from core import checks
 from core.models import PermissionLevel
@@ -19,13 +26,25 @@ class ClaimThread(commands.Cog):
     """Allows supporters to claim thread by sending claim in the thread channel"""
     def __init__(self, bot):
         self.bot = bot
-        self.db = bot.api.get_plugin_partition(self)
+        self.mongo_uri = os.getenv('MONGODB_URI')
+        self.mongo_db_name = os.getenv('MONGODB_DATABASE', 'modmail_shared_db')
+        
+        # Create Motor client
+        self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(self.mongo_uri)
+        self.mongo_db = self.mongo_client[self.mongo_db_name]
+        
+        # Ticket stats collection
+        self.ticket_stats_collection = self.mongo_db['ticket_stats']
+        
         self._config_cache = {}
         self._cache_timestamp = 0
         self.channel_cache = {}
         self.user_cache = {}
         self.cache_lifetime = 300  # 5 minutes
         self.check_message_cache = {}
+        
+        # Webhook configuration
+        self.ticket_export_webhook = None
         
         # Track command usage per channel
         self.command_usage = {}
@@ -46,12 +65,12 @@ class ClaimThread(commands.Cog):
 
     async def clean_old_claims(self):
         """Clean up claims for non-existent channels"""
-        cursor = self.db.find({'guild': str(self.bot.modmail_guild.id)})
+        cursor = self.mongo_db.find({'guild': str(self.bot.modmail_guild.id)})
         async for doc in cursor:
             if 'thread_id' in doc:
                 channel = self.bot.get_channel(int(doc['thread_id']))  # Use cache first
                 if not channel and ('status' not in doc or doc['status'] != 'closed'):
-                    await self.db.find_one_and_update(
+                    await self.mongo_db.find_one_and_update(
                         {'thread_id': doc['thread_id'], 'guild': doc['guild']},
                         {'$set': {'status': 'closed'}}
                     )
@@ -63,7 +82,7 @@ class ClaimThread(commands.Cog):
 
     async def get_config(self):
         """Get plugin configuration with defaults"""
-        config = await self.db.find_one({'_id': 'config'}) or {}
+        config = await self.mongo_db.find_one({'_id': 'config'}) or {}
         return {
             'limit': config.get('limit', self.default_config['limit']),
             'override_roles': config.get('override_roles', self.default_config['override_roles']),
@@ -151,7 +170,7 @@ class ClaimThread(commands.Cog):
         if days:
             cutoff_date = datetime.utcnow() - timedelta(days=days)
         
-        async for doc in self.db.find(
+        async for doc in self.mongo_db.find(
             {
                 'guild': str(self.bot.modmail_guild.id),
                 'claimers': {'$exists': True}
@@ -172,13 +191,13 @@ class ClaimThread(commands.Cog):
                         claims[claimer] = claims.get(claimer, 0) + 1
                     elif not channel and ('status' not in doc or doc['status'] != 'closed'):
                         # Update status if channel doesn't exist
-                        await self.db.find_one_and_update(
+                        await self.mongo_db.find_one_and_update(
                             {'thread_id': doc['thread_id'], 'guild': doc['guild']},
                             {'$set': {'status': 'closed'}}
                         )
                 except:
                     if 'status' not in doc or doc['status'] != 'closed':
-                        await self.db.find_one_and_update(
+                        await self.mongo_db.find_one_and_update(
                             {'thread_id': doc['thread_id'], 'guild': doc['guild']},
                             {'$set': {'status': 'closed'}}
                         )
@@ -217,7 +236,7 @@ class ClaimThread(commands.Cog):
     @commands.command()
     async def claim(self, ctx):
         """Claim a thread without renaming"""
-        thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
+        thread = await self.mongo_db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
         has_active_claimers = thread and thread.get('claimers') and len(thread['claimers']) > 0
         
         if not has_active_claimers:
@@ -231,14 +250,14 @@ class ClaimThread(commands.Cog):
 
                 # Update database without renaming
                 if thread is None:
-                    await self.db.insert_one({
+                    await self.mongo_db.insert_one({
                         'guild': str(self.bot.modmail_guild.id),
                         'thread_id': str(ctx.thread.channel.id),
                         'claimers': [str(ctx.author.id)],
                         'status': 'open'
                     })
                 else:
-                    await self.db.find_one_and_update(
+                    await self.mongo_db.find_one_and_update(
                         {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)},
                         {'$set': {'claimers': [str(ctx.author.id)], 'status': 'open'}}
                     )
@@ -258,10 +277,10 @@ class ClaimThread(commands.Cog):
     @commands.command()
     async def unclaim(self, ctx):
         """Unclaim a thread without renaming"""
-        thread = await self.db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
+        thread = await self.mongo_db.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
         if thread and str(ctx.author.id) in thread['claimers']:
             try:
-                await self.db.find_one_and_update(
+                await self.mongo_db.find_one_and_update(
                     {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)}, 
                     {'$pull': {'claimers': str(ctx.author.id)}}
                 )
@@ -296,7 +315,7 @@ class ClaimThread(commands.Cog):
     @commands.command()
     async def claims(self, ctx):
         """Check which channels you have claimed"""
-        cursor = self.db.find({'guild':str(self.bot.modmail_guild.id)})
+        cursor = self.mongo_db.find({'guild':str(self.bot.modmail_guild.id)})
         active_channels = []
         
         async for doc in cursor:
@@ -307,12 +326,12 @@ class ClaimThread(commands.Cog):
                         if channel:
                             active_channels.append(channel)
                         else:
-                            await self.db.find_one_and_update(
+                            await self.mongo_db.find_one_and_update(
                                 {'thread_id': doc['thread_id'], 'guild': doc['guild']},
                                 {'$set': {'status': 'closed'}}
                             )
                     except discord.NotFound:
-                        await self.db.find_one_and_update(
+                        await self.mongo_db.find_one_and_update(
                             {'thread_id': doc['thread_id'], 'guild': doc['guild']},
                             {'$set': {'status': 'closed'}}
                         )
@@ -345,14 +364,14 @@ class ClaimThread(commands.Cog):
             except:
                 pass
 
-    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    @checks.has_permissions(PermissionLevel.MODERATOR)
     @commands.command(name="stats")
     async def claim_stats(self, ctx, member: discord.Member = None):
         """View comprehensive claim statistics"""
         target = member or ctx.author
         
         # Get all claims for this user
-        cursor = self.db.find({'guild': str(self.bot.modmail_guild.id)})
+        cursor = self.mongo_db.find({'guild': str(self.bot.modmail_guild.id)})
         active_claims = []
         closed_claims = []
         
@@ -365,14 +384,14 @@ class ClaimThread(commands.Cog):
                     else:
                         closed_claims.append(doc)
                         if not channel and ('status' not in doc or doc['status'] != 'closed'):
-                            await self.db.find_one_and_update(
+                            await self.mongo_db.find_one_and_update(
                                 {'thread_id': doc['thread_id'], 'guild': doc['guild']},
                                 {'$set': {'status': 'closed'}}
                             )
                 except (discord.NotFound, discord.Forbidden):
                     closed_claims.append(doc)
                     if 'status' not in doc or doc['status'] != 'closed':
-                        await self.db.find_one_and_update(
+                        await self.mongo_db.find_one_and_update(
                             {'thread_id': doc['thread_id'], 'guild': doc['guild']},
                             {'$set': {'status': 'closed'}}
                         )
@@ -380,7 +399,7 @@ class ClaimThread(commands.Cog):
         total_claims = len(active_claims) + len(closed_claims)
         
         # Get claim limit
-        config = await self.db.find_one({'_id': 'config'})
+        config = await self.mongo_db.find_one({'_id': 'config'})
         limit = config.get('limit', 0) if config else 0
         
         # Create progress bars
@@ -418,7 +437,7 @@ class ClaimThread(commands.Cog):
             'total': 0
         }
         
-        async for doc in self.db.find({
+        async for doc in self.mongo_db.find({
             'guild': str(self.bot.modmail_guild.id),
             'claimers': {'$exists': True}
         }):
@@ -433,7 +452,7 @@ class ClaimThread(commands.Cog):
                     stats['closed'] += 1
                     # Update status if channel doesn't exist
                     if not channel and ('status' not in doc or doc['status'] != 'closed'):
-                        await self.db.find_one_and_update(
+                        await self.mongo_db.find_one_and_update(
                             {'thread_id': doc['thread_id'], 'guild': doc['guild']},
                             {'$set': {'status': 'closed'}}
                         )
@@ -441,7 +460,7 @@ class ClaimThread(commands.Cog):
                 stats['closed'] += 1
                 # Update status if there's an error
                 if 'status' not in doc or doc['status'] != 'closed':
-                    await self.db.find_one_and_update(
+                    await self.mongo_db.find_one_and_update(
                         {'thread_id': doc['thread_id'], 'guild': doc['guild']},
                         {'$set': {'status': 'closed'}}
                     )
@@ -495,7 +514,7 @@ class ClaimThread(commands.Cog):
         if limit < 0:
             return await ctx.send("Limit cannot be negative")
             
-        await self.db.find_one_and_update(
+        await self.mongo_db.find_one_and_update(
             {'_id': 'config'},
             {'$set': {'limit': limit}},
             upsert=True
@@ -509,7 +528,7 @@ class ClaimThread(commands.Cog):
     async def claim_override(self, ctx):
         """Manage override roles for claims"""
         if ctx.invoked_subcommand is None:
-            config = await self.get_config()
+            config = await self.mongo_db.find_one({'_id': 'config'})
             
             override_roles = []
             for role_id in config['override_roles']:
@@ -527,14 +546,14 @@ class ClaimThread(commands.Cog):
     @claim_override.command(name='add')
     async def override_add(self, ctx, *, role: discord.Role):
         """Add a role to override claims"""
-        config = await self.db.find_one({'_id': 'config'}) or {}
+        config = await self.mongo_db.find_one({'_id': 'config'}) or {}
         override_roles = config.get('override_roles', [])
         
         if role.id in override_roles:
             return await ctx.send("That role is already an override role")
             
         override_roles.append(role.id)
-        await self.db.find_one_and_update(
+        await self.mongo_db.find_one_and_update(
             {'_id': 'config'},
             {'$set': {'override_roles': override_roles}},
             upsert=True
@@ -545,14 +564,14 @@ class ClaimThread(commands.Cog):
     @claim_override.command(name='remove')
     async def override_remove(self, ctx, *, role: discord.Role):
         """Remove a role from override claims"""
-        config = await self.db.find_one({'_id': 'config'}) or {}
+        config = await self.mongo_db.find_one({'_id': 'config'}) or {}
         override_roles = config.get('override_roles', [])
         
         if role.id not in override_roles:
             return await ctx.send("That role is not an override role")
             
         override_roles.remove(role.id)
-        await self.db.find_one_and_update(
+        await self.mongo_db.find_one_and_update(
             {'_id': 'config'},
             {'$set': {'override_roles': override_roles}},
             upsert=True
@@ -560,6 +579,281 @@ class ClaimThread(commands.Cog):
         
         await ctx.send(f"Removed {role.mention} from override roles")
 
+    async def export_claimed_tickets(self):
+        """
+        Export claimed tickets to an Excel file and send via webhook
+        """
+        # Check if webhook is configured
+        if not self.ticket_export_webhook:
+            print("Ticket export webhook is not configured. Use !set_export_webhook to set it up.")
+            return None
+
+        # Fetch all claimed tickets from the database
+        claimed_tickets = await self.mongo_db.find({
+            'guild': str(self.bot.modmail_guild.id),
+            'claimers': {'$exists': True}
+        }).to_list(length=None)
+        
+        # Prepare data for Excel
+        ticket_data = []
+        for ticket in claimed_tickets:
+            ticket_data.append({
+                'Thread ID': ticket.get('thread_id', 'N/A'),
+                'Claimer ID': ticket.get('claimers', ['N/A'])[0],
+                'Claimed At': ticket.get('created_at', datetime.utcnow()),
+                'Channel ID': ticket.get('thread_id', 'N/A')
+            })
+        
+        # Create DataFrame
+        df = pd.DataFrame(ticket_data)
+        
+        # Generate unique filename
+        filename = f"claimed_tickets_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        filepath = os.path.join('exports', filename)
+        
+        # Ensure exports directory exists
+        os.makedirs('exports', exist_ok=True)
+        
+        # Save to Excel
+        df.to_excel(filepath, index=False)
+        
+        # Send via webhook
+        try:
+            async with aiohttp.ClientSession() as session:
+                with open(filepath, 'rb') as f:
+                    form = aiohttp.FormData()
+                    form.add_field('file', 
+                        f, 
+                        filename=filename,
+                        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                    )
+                    
+                    async with session.post(
+                        self.ticket_export_webhook, 
+                        data=form
+                    ) as response:
+                        if response.status == 200:
+                            print(f"Successfully exported claims to {filename}")
+                            return filename
+                        else:
+                            print(f"Failed to send webhook: {response.status}")
+                            return None
+        except Exception as e:
+            print(f"Error sending webhook: {e}")
+            return None
+
+    @commands.command(name="set_export_webhook")
+    @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
+    async def set_export_webhook(self, ctx, webhook_url: str):
+        """
+        Set the webhook URL for ticket exports
+        
+        Usage: !set_export_webhook https://discord.com/api/webhooks/...
+        """
+        # Validate webhook URL
+        if not webhook_url.startswith('https://discord.com/api/webhooks/'):
+            await ctx.send("Invalid Discord webhook URL. Please provide a valid Discord webhook.")
+            return
+        
+        # Save webhook to instance
+        self.ticket_export_webhook = webhook_url
+        
+        # Optionally, you could save this to a config in the database
+        await self.mongo_db.update_one(
+            {'_id': 'ticket_export_config'},
+            {'$set': {'webhook_url': webhook_url}},
+            upsert=True
+        )
+        
+        await ctx.send("Ticket export webhook URL has been set successfully!")
+
+    @commands.command(name="exportclaims")
+    @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
+    async def export_claims_command(self, ctx):
+        """
+        Manual command to export claimed tickets
+        """
+        if not self.ticket_export_webhook:
+            await ctx.send("Webhook URL is not set. Use !set_export_webhook first.")
+            return
+        
+        await ctx.send("Exporting claimed tickets...")
+        filename = await self.export_claimed_tickets()
+        
+        if filename:
+            await ctx.send(f"Exported claimed tickets to {filename}")
+        else:
+            await ctx.send("Failed to export tickets. Check the logs for more information.")
+
+    async def cog_load(self):
+        """
+        Load saved webhook configuration when the cog is loaded
+        """
+        # Try to load previously saved webhook URL
+        config = await self.mongo_db.find_one({'_id': 'ticket_export_config'})
+        if config and 'webhook_url' in config:
+            self.ticket_export_webhook = config['webhook_url']
+
+    async def cog_unload(self):
+        """
+        Close MongoDB connection when cog is unloaded
+        """
+        if hasattr(self, 'mongo_client'):
+            self.mongo_client.close()
+
+    async def update_ticket_stats(self, user_id):
+        """
+        Update ticket stats for a user in shared MongoDB and trigger webhook
+        """
+        # Find and update user stats atomically
+        result = await self.ticket_stats_collection.find_one_and_update(
+            {'user_id': user_id},
+            {'$inc': {'closed_tickets': 1}},
+            upsert=True,
+            return_document=True
+        )
+        
+        # Extract updated ticket count
+        closed_tickets = result.get('closed_tickets', 1) if result else 1
+        
+        # Send via webhook from environment variable
+        webhook_url = os.getenv('TICKET_STATS_WEBHOOK_URL')
+        if webhook_url:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    stats_payload = {
+                        'user_id': user_id,
+                        'closed_tickets': closed_tickets
+                    }
+                    
+                    async with session.post(
+                        webhook_url, 
+                        json=stats_payload
+                    ) as response:
+                        if response.status != 200:
+                            print(f"Failed to send stats webhook: {response.status}")
+            except Exception as e:
+                print(f"Error sending stats webhook: {e}")
+        
+        return closed_tickets
+
+    @commands.command(name="show_ticket_stats")
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    async def show_ticket_stats(self, ctx, user_id: int = None):
+        """
+        Show ticket stats for a user or all users
+        """
+        if user_id:
+            # Fetch stats for specific user
+            user_stats = await self.ticket_stats_collection.find_one({'user_id': user_id})
+            
+            if user_stats:
+                await ctx.send(f"User {user_id} has closed {user_stats.get('closed_tickets', 0)} tickets.")
+            else:
+                await ctx.send(f"No ticket stats found for user {user_id}.")
+        else:
+            # Fetch all user stats
+            all_stats = await self.ticket_stats_collection.find().to_list(length=None)
+            
+            if all_stats:
+                stats_message = "Ticket Stats:\n"
+                for stat in all_stats:
+                    stats_message += f"User {stat['user_id']}: {stat['closed_tickets']} tickets\n"
+                await ctx.send(stats_message)
+            else:
+                await ctx.send("No ticket stats available.")
+
+    @commands.Cog.listener()
+    async def on_thread_close(self, thread):
+        """
+        Automatically update ticket stats when a thread is closed
+        """
+        # Assuming thread object has a closer attribute with user ID
+        if hasattr(thread, 'closer') and thread.closer:
+            closer_id = thread.closer.id
+            closed_count = await self.update_ticket_stats(closer_id)
+            
+            # Optional: Log or notify about ticket closure
+            print(f"User {closer_id} closed a ticket. Total closed tickets: {closed_count}")
+
+@commands.command(name="set_stats_webhook")
+@checks.has_permissions(PermissionLevel.ADMINISTRATOR)
+async def set_stats_webhook(ctx, webhook_url: str):
+    """
+    Set the webhook URL for ticket stats
+    
+    Usage: !set_stats_webhook https://discord.com/api/webhooks/...
+    """
+    # Validate webhook URL
+    if not webhook_url.startswith('https://discord.com/api/webhooks/'):
+        await ctx.send("Invalid Discord webhook URL. Please provide a valid Discord webhook.")
+        return
+    
+    # Save webhook to instance
+    ctx.bot.get_cog('ClaimThread').ticket_stats_webhook = webhook_url
+    
+    # Save to database
+    config_collection = ctx.bot.api.get_shared_partition('plugin_configs')
+    await config_collection.update_one(
+        {'_id': 'ticket_stats_webhook'},
+        {'$set': {'url': webhook_url}},
+        upsert=True
+    )
+    
+    await ctx.send("Ticket stats webhook URL has been set successfully!")
+
+@commands.command(name="show_ticket_stats")
+@checks.has_permissions(PermissionLevel.SUPPORTER)
+async def show_ticket_stats(ctx, user_id: int = None):
+    """
+    Show ticket stats for a user or all users
+    """
+    # Use shared collection
+    stats_collection = ctx.bot.api.get_shared_partition('ticket_stats')
+    
+    if user_id:
+        # Fetch stats for specific user
+        user_stats = await stats_collection.find_one({'user_id': user_id})
+        
+        if user_stats:
+            await ctx.send(f"User {user_id} has closed {user_stats.get('closed_tickets', 0)} tickets.")
+        else:
+            await ctx.send(f"No ticket stats found for user {user_id}.")
+    else:
+        # Fetch all user stats
+        all_stats = await stats_collection.find().to_list(length=None)
+        
+        if all_stats:
+            stats_message = "Ticket Stats:\n"
+            for stat in all_stats:
+                stats_message += f"User {stat['user_id']}: {stat['closed_tickets']} tickets\n"
+            await ctx.send(stats_message)
+        else:
+            await ctx.send("No ticket stats available.")
+
+@commands.Cog.listener()
+async def on_thread_close(ctx, thread):
+    """
+    Automatically update ticket stats when a thread is closed
+    """
+    # Assuming thread object has a closer attribute with user ID
+    if hasattr(thread, 'closer') and thread.closer:
+        closer_id = thread.closer.id
+        closed_count = await ctx.bot.get_cog('ClaimThread').update_ticket_stats(closer_id)
+        
+        # Optional: Log or notify about ticket closure
+        print(f"User {closer_id} closed a ticket. Total closed tickets: {closed_count}")
+
+async def cog_load(ctx):
+    """
+    Load saved webhook configuration when the cog is loaded
+    """
+    # Try to load previously saved webhook URL for stats
+    config_collection = ctx.bot.api.get_shared_partition('plugin_configs')
+    config = await config_collection.find_one({'_id': 'ticket_stats_webhook'})
+    
+    if config and 'url' in config:
+        ctx.bot.get_cog('ClaimThread').ticket_stats_webhook = config['url']
 
 async def check_reply(ctx):
     """Check if user can reply to the thread"""
@@ -587,7 +881,7 @@ async def check_reply(ctx):
                     pass
                 return False
                 
-        thread = await cog.db.find_one({
+        thread = await cog.mongo_db.find_one({
             'thread_id': str(ctx.thread.channel.id), 
             'guild': str(ctx.bot.modmail_guild.id)
         })
@@ -598,7 +892,7 @@ async def check_reply(ctx):
             
         # Check for override permissions
         has_override = False
-        if config := await cog.db.find_one({'_id': 'config'}):
+        if config := await cog.mongo_db.find_one({'_id': 'config'}):
             override_roles = config.get('override_roles', [])
             member_roles = [role.id for role in ctx.author.roles]
             has_override = any(role_id in member_roles for role_id in override_roles)
