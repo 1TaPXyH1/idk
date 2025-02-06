@@ -15,6 +15,7 @@ import pandas as pd
 import aiohttp
 import motor.motor_asyncio
 from pymongo import UpdateOne
+from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 
 try:
     PANDAS_AVAILABLE = True
@@ -109,16 +110,42 @@ class ClaimThread(commands.Cog):
         
         try:
             # Create Motor client for direct MongoDB access
-            self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(self.mongo_uri)
+            self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(
+                self.mongo_uri, 
+                serverSelectionTimeoutMS=5000,  # 5 second timeout
+                connectTimeoutMS=5000           # 5 second connection timeout
+            )
+            
+            # Test connection
             self.mongo_db = self.mongo_client[self.mongo_db_name]
             
-            # Create collections
+            # Create collections with validation
             self.ticket_claims_collection = self.mongo_db['ticket_claims']
             self.ticket_stats_collection = self.mongo_db['ticket_stats']
             self.config_collection = self.mongo_db['plugin_configs']
+            
+            # Perform a simple connection test
+            async def test_connection():
+                try:
+                    await self.mongo_db.command('ping')
+                    print("✅ MongoDB Connection Successful")
+                except Exception as e:
+                    print(f"❌ MongoDB Connection Test Failed: {e}")
+            
+            # Run connection test
+            self.bot.loop.create_task(test_connection())
+        
+        except (ConnectionFailure, ServerSelectionTimeoutError) as e:
+            print(f"❌ MongoDB Connection Error: {e}")
+            print("Fallback to bot's shared API for data access")
+            
+            # Fallback to bot's shared API if direct connection fails
+            self.ticket_claims_collection = bot.api.get_shared_partition('ticket_claims')
+            self.ticket_stats_collection = bot.api.get_shared_partition('ticket_stats')
+            self.config_collection = bot.api.get_plugin_partition(self)
         
         except Exception as e:
-            print(f"MongoDB Connection Error: {e}")
+            print(f"Unexpected MongoDB Error: {e}")
             raise
         
         # Initialize necessary attributes
