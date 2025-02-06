@@ -13,6 +13,8 @@ import os
 from dotenv import load_dotenv
 import pandas as pd
 import aiohttp
+import motor.motor_asyncio
+from pymongo import UpdateOne
 
 try:
     PANDAS_AVAILABLE = True
@@ -52,9 +54,9 @@ async def check_reply(ctx):
                     pass
                 return False
                 
-        thread = await cog.coll.find_one({
+        thread = await cog.ticket_claims_collection.find_one({
             'thread_id': str(ctx.thread.channel.id), 
-            'guild': str(ctx.bot.modmail_guild.id)
+            'guild_id': str(ctx.bot.modmail_guild.id)
         })
         
         # If thread isn't claimed or doesn't exist, allow reply
@@ -63,7 +65,7 @@ async def check_reply(ctx):
             
         # Check for override permissions
         has_override = False
-        if config := await cog.coll.find_one({'_id': 'config'}):
+        if config := await cog.get_config():
             override_roles = config.get('override_roles', [])
             member_roles = [role.id for role in ctx.author.roles]
             has_override = any(role_id in member_roles for role_id in override_roles)
@@ -101,43 +103,46 @@ class ClaimThread(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         
-        # Use bot.api to get plugin partition
-        self.coll = bot.api.get_plugin_partition(self)
+        # Direct MongoDB connection string
+        self.mongo_uri = 'mongodb+srv://111iotapxrb:fEJdHM55QIYPVBDb@tickets.eqqut.mongodb.net/?retryWrites=true&w=majority&appName=Tickets'
+        self.mongo_db_name = 'Tickets'
+        
+        try:
+            # Create Motor client for direct MongoDB access
+            self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(self.mongo_uri)
+            self.mongo_db = self.mongo_client[self.mongo_db_name]
+            
+            # Create collections
+            self.ticket_claims_collection = self.mongo_db['ticket_claims']
+            self.ticket_stats_collection = self.mongo_db['ticket_stats']
+            self.config_collection = self.mongo_db['plugin_configs']
+        
+        except Exception as e:
+            print(f"MongoDB Connection Error: {e}")
+            raise
+        
+        # Initialize necessary attributes
+        self.check_message_cache = {}
+        self.default_config = {
+            'claim_limit': 5,  # Default claim limit
+            'override_roles': []  # Default override roles
+        }
         
         # Optional: Fallback for pandas-dependent methods
         self.pandas_available = PANDAS_AVAILABLE
         
-        self._config_cache = {}
-        self._cache_timestamp = 0
-        self.channel_cache = {}
-        self.user_cache = {}
-        self.cache_lifetime = 300  # 5 minutes
-        self.check_message_cache = {}
-        
-        # Webhook configuration
+        # Ticket export webhook (optional)
         self.ticket_export_webhook = None
-        
-        # Track command usage per channel
-        self.command_usage = {}
-        self.reset_times = {}
-        
-        # Default configuration
-        self.default_config = {
-            'limit': 5,  # Default claim limit
-            'override_roles': [],  # Default override roles
-            'command_cooldown': 5,    # 5 seconds per user
-            'thread_cooldown': 300    # 5 minutes per thread
-        }
 
     async def clean_old_claims(self):
         """Clean up claims for non-existent channels"""
-        cursor = self.coll.find({'guild': str(self.bot.modmail_guild.id)})
+        cursor = self.ticket_claims_collection.find({'guild_id': str(self.bot.modmail_guild.id)})
         async for doc in cursor:
             if 'thread_id' in doc:
                 channel = self.bot.get_channel(int(doc['thread_id']))  # Use cache first
                 if not channel and ('status' not in doc or doc['status'] != 'closed'):
-                    await self.coll.find_one_and_update(
-                        {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                    await self.ticket_claims_collection.find_one_and_update(
+                        {'thread_id': doc['thread_id'], 'guild_id': doc['guild_id']},
                         {'$set': {'status': 'closed'}}
                     )
 
@@ -147,13 +152,15 @@ class ClaimThread(commands.Cog):
         await self.clean_old_claims()
 
     async def get_config(self):
-        """Get plugin configuration with defaults"""
-        config = await self.coll.find_one({'_id': 'config'}) or {}
+        """
+        Retrieve plugin configuration
+        
+        :return: Configuration dictionary
+        """
+        config = await self.config_collection.find_one({'_id': 'claim_config'}) or {}
         return {
-            'limit': config.get('limit', self.default_config['limit']),
-            'override_roles': config.get('override_roles', self.default_config['override_roles']),
-            'command_cooldown': config.get('command_cooldown', self.default_config['command_cooldown']),
-            'thread_cooldown': config.get('thread_cooldown', self.default_config['thread_cooldown'])
+            'claim_limit': config.get('claim_limit', self.default_config['claim_limit']),
+            'override_roles': config.get('override_roles', self.default_config['override_roles'])
         }
 
     async def handle_rate_limit(self, ctx):
@@ -236,16 +243,16 @@ class ClaimThread(commands.Cog):
         if days:
             cutoff_date = datetime.utcnow() - timedelta(days=days)
         
-        async for doc in self.coll.find(
+        async for doc in self.ticket_claims_collection.find(
             {
-                'guild': str(self.bot.modmail_guild.id),
+                'guild_id': str(self.bot.modmail_guild.id),
                 'claimers': {'$exists': True}
             }
         ):
             # Skip if before cutoff date
-            if cutoff_date and 'created_at' in doc:
-                created_at = datetime.fromisoformat(doc['created_at'])
-                if created_at < cutoff_date:
+            if cutoff_date and 'claimed_at' in doc:
+                claimed_at = datetime.fromisoformat(doc['claimed_at'])
+                if claimed_at < cutoff_date:
                     continue
                     
             for claimer in doc['claimers']:
@@ -257,14 +264,14 @@ class ClaimThread(commands.Cog):
                         claims[claimer] = claims.get(claimer, 0) + 1
                     elif not channel and ('status' not in doc or doc['status'] != 'closed'):
                         # Update status if channel doesn't exist
-                        await self.coll.find_one_and_update(
-                            {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                        await self.ticket_claims_collection.find_one_and_update(
+                            {'thread_id': doc['thread_id'], 'guild_id': doc['guild_id']},
                             {'$set': {'status': 'closed'}}
                         )
                 except:
                     if 'status' not in doc or doc['status'] != 'closed':
-                        await self.coll.find_one_and_update(
-                            {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                        await self.ticket_claims_collection.find_one_and_update(
+                            {'thread_id': doc['thread_id'], 'guild_id': doc['guild_id']},
                             {'$set': {'status': 'closed'}}
                         )
 
@@ -302,7 +309,7 @@ class ClaimThread(commands.Cog):
     @commands.command()
     async def claim(self, ctx):
         """Claim a thread without renaming"""
-        thread = await self.coll.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
+        thread = await self.ticket_claims_collection.find_one({'thread_id': str(ctx.thread.channel.id), 'guild_id': str(self.bot.modmail_guild.id)})
         has_active_claimers = thread and thread.get('claimers') and len(thread['claimers']) > 0
         
         if not has_active_claimers:
@@ -316,15 +323,15 @@ class ClaimThread(commands.Cog):
 
                 # Update database without renaming
                 if thread is None:
-                    await self.coll.insert_one({
-                        'guild': str(self.bot.modmail_guild.id),
+                    await self.ticket_claims_collection.insert_one({
+                        'guild_id': str(self.bot.modmail_guild.id),
                         'thread_id': str(ctx.thread.channel.id),
                         'claimers': [str(ctx.author.id)],
                         'status': 'open'
                     })
                 else:
-                    await self.coll.find_one_and_update(
-                        {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)},
+                    await self.ticket_claims_collection.find_one_and_update(
+                        {'thread_id': str(ctx.thread.channel.id), 'guild_id': str(self.bot.modmail_guild.id)},
                         {'$set': {'claimers': [str(ctx.author.id)], 'status': 'open'}}
                     )
 
@@ -343,11 +350,11 @@ class ClaimThread(commands.Cog):
     @commands.command()
     async def unclaim(self, ctx):
         """Unclaim a thread without renaming"""
-        thread = await self.coll.find_one({'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)})
+        thread = await self.ticket_claims_collection.find_one({'thread_id': str(ctx.thread.channel.id), 'guild_id': str(self.bot.modmail_guild.id)})
         if thread and str(ctx.author.id) in thread['claimers']:
             try:
-                await self.coll.find_one_and_update(
-                    {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)}, 
+                await self.ticket_claims_collection.find_one_and_update(
+                    {'thread_id': str(ctx.thread.channel.id), 'guild_id': str(self.bot.modmail_guild.id)}, 
                     {'$pull': {'claimers': str(ctx.author.id)}}
                 )
                 
@@ -381,7 +388,7 @@ class ClaimThread(commands.Cog):
     @commands.command()
     async def claims(self, ctx):
         """Check which channels you have claimed"""
-        cursor = self.coll.find({'guild':str(self.bot.modmail_guild.id)})
+        cursor = self.ticket_claims_collection.find({'guild_id':str(self.bot.modmail_guild.id)})
         active_channels = []
         
         async for doc in cursor:
@@ -392,13 +399,13 @@ class ClaimThread(commands.Cog):
                         if channel:
                             active_channels.append(channel)
                         else:
-                            await self.coll.find_one_and_update(
-                                {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                            await self.ticket_claims_collection.find_one_and_update(
+                                {'thread_id': doc['thread_id'], 'guild_id': doc['guild_id']},
                                 {'$set': {'status': 'closed'}}
                             )
                     except discord.NotFound:
-                        await self.coll.find_one_and_update(
-                            {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                        await self.ticket_claims_collection.find_one_and_update(
+                            {'thread_id': doc['thread_id'], 'guild_id': doc['guild_id']},
                             {'$set': {'status': 'closed'}}
                         )
 
@@ -437,7 +444,7 @@ class ClaimThread(commands.Cog):
         target = member or ctx.author
         
         # Get all claims for this user
-        cursor = self.coll.find({'guild': str(self.bot.modmail_guild.id)})
+        cursor = self.ticket_claims_collection.find({'guild_id': str(self.bot.modmail_guild.id)})
         active_claims = []
         closed_claims = []
         
@@ -450,15 +457,15 @@ class ClaimThread(commands.Cog):
                     else:
                         closed_claims.append(doc)
                         if not channel and ('status' not in doc or doc['status'] != 'closed'):
-                            await self.coll.find_one_and_update(
-                                {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                            await self.ticket_claims_collection.find_one_and_update(
+                                {'thread_id': doc['thread_id'], 'guild_id': doc['guild_id']},
                                 {'$set': {'status': 'closed'}}
                             )
                 except (discord.NotFound, discord.Forbidden):
                     closed_claims.append(doc)
                     if 'status' not in doc or doc['status'] != 'closed':
-                        await self.coll.find_one_and_update(
-                            {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                        await self.ticket_claims_collection.find_one_and_update(
+                            {'thread_id': doc['thread_id'], 'guild_id': doc['guild_id']},
                             {'$set': {'status': 'closed'}}
                         )
         
@@ -466,7 +473,7 @@ class ClaimThread(commands.Cog):
         
         # Get claim limit
         config = await self.get_config()
-        limit = config.get('limit', 0) if config else 0
+        limit = config.get('claim_limit', 0) if config else 0
         
         # Create progress bars
         def create_progress_bar(value, max_value, length=5):
@@ -503,8 +510,8 @@ class ClaimThread(commands.Cog):
             'total': 0
         }
         
-        async for doc in self.coll.find({
-            'guild': str(self.bot.modmail_guild.id),
+        async for doc in self.ticket_claims_collection.find({
+            'guild_id': str(self.bot.modmail_guild.id),
             'claimers': {'$exists': True}
         }):
             stats['total'] += 1
@@ -518,16 +525,16 @@ class ClaimThread(commands.Cog):
                     stats['closed'] += 1
                     # Update status if channel doesn't exist
                     if not channel and ('status' not in doc or doc['status'] != 'closed'):
-                        await self.coll.find_one_and_update(
-                            {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                        await self.ticket_claims_collection.find_one_and_update(
+                            {'thread_id': doc['thread_id'], 'guild_id': doc['guild_id']},
                             {'$set': {'status': 'closed'}}
                         )
             except:
                 stats['closed'] += 1
                 # Update status if there's an error
                 if 'status' not in doc or doc['status'] != 'closed':
-                    await self.coll.find_one_and_update(
-                        {'thread_id': doc['thread_id'], 'guild': doc['guild']},
+                    await self.ticket_claims_collection.find_one_and_update(
+                        {'thread_id': doc['thread_id'], 'guild_id': doc['guild_id']},
                         {'$set': {'status': 'closed'}}
                     )
 
@@ -568,7 +575,7 @@ class ClaimThread(commands.Cog):
             config = await self.get_config()
             embed = discord.Embed(
                 title="Claim Configuration",
-                description=f"Current claim limit: **{config['limit']}**\n"
+                description=f"Current claim limit: **{config['claim_limit']}**\n"
                           f"Use `{ctx.prefix}claimconfig limit <number>` to change",
                 color=self.bot.main_color
             )
@@ -580,9 +587,9 @@ class ClaimThread(commands.Cog):
         if limit < 0:
             return await ctx.send("Limit cannot be negative")
             
-        await self.coll.find_one_and_update(
-            {'_id': 'config'},
-            {'$set': {'limit': limit}},
+        await self.config_collection.find_one_and_update(
+            {'_id': 'claim_config'},
+            {'$set': {'claim_limit': limit}},
             upsert=True
         )
         
@@ -594,7 +601,7 @@ class ClaimThread(commands.Cog):
     async def claim_override(self, ctx):
         """Manage override roles for claims"""
         if ctx.invoked_subcommand is None:
-            config = await self.coll.find_one({'_id': 'config'})
+            config = await self.config_collection.find_one({'_id': 'claim_config'})
             
             override_roles = []
             for role_id in config['override_roles']:
@@ -612,15 +619,15 @@ class ClaimThread(commands.Cog):
     @claim_override.command(name='add')
     async def override_add(self, ctx, *, role: discord.Role):
         """Add a role to override claims"""
-        config = await self.coll.find_one({'_id': 'config'}) or {}
+        config = await self.config_collection.find_one({'_id': 'claim_config'}) or {}
         override_roles = config.get('override_roles', [])
         
         if role.id in override_roles:
             return await ctx.send("That role is already an override role")
             
         override_roles.append(role.id)
-        await self.coll.find_one_and_update(
-            {'_id': 'config'},
+        await self.config_collection.find_one_and_update(
+            {'_id': 'claim_config'},
             {'$set': {'override_roles': override_roles}},
             upsert=True
         )
@@ -630,67 +637,184 @@ class ClaimThread(commands.Cog):
     @claim_override.command(name='remove')
     async def override_remove(self, ctx, *, role: discord.Role):
         """Remove a role from override claims"""
-        config = await self.coll.find_one({'_id': 'config'}) or {}
+        config = await self.config_collection.find_one({'_id': 'claim_config'}) or {}
         override_roles = config.get('override_roles', [])
         
         if role.id not in override_roles:
             return await ctx.send("That role is not an override role")
             
         override_roles.remove(role.id)
-        await self.coll.find_one_and_update(
-            {'_id': 'config'},
+        await self.config_collection.find_one_and_update(
+            {'_id': 'claim_config'},
             {'$set': {'override_roles': override_roles}},
             upsert=True
         )
         
         await ctx.send(f"Removed {role.mention} from override roles")
 
-    async def export_claimed_tickets(self, days=None):
+    async def update_ticket_stats(self, user_id):
         """
-        Export claimed tickets to a file
+        Update ticket statistics when a thread is closed
         
-        :param days: Number of days to look back
-        :return: Filename or CSV content
+        :param user_id: ID of the user closing the ticket
+        :return: Updated ticket count
         """
-        # Prepare query
-        query = {
-            'guild': str(self.bot.modmail_guild.id),
-            'claimers': {'$exists': True}
-        }
-        
-        # Add date filter if days specified
-        if days:
-            cutoff_date = datetime.utcnow() - timedelta(days=days)
-            query['claimed_at'] = {'$gte': cutoff_date}
-        
-        ticket_data = []
-        
-        # Fetch tickets
-        async for doc in self.coll.find(query):
-            ticket_data.append({
-                'user_id': doc.get('user_id', ''),
-                'thread_id': doc.get('thread_id', ''),
-                'status': doc.get('status', ''),
-                'claimed_at': doc.get('claimed_at', '')
-            })
-        
-        # Create DataFrame or CSV
-        if self.pandas_available:
-            df = pd.DataFrame(ticket_data)
-            filename = f"claimed_tickets_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-            df.to_excel(filename, index=False)
-            return filename
+        try:
+            # Atomically update ticket stats
+            result = await self.ticket_stats_collection.find_one_and_update(
+                {'user_id': str(user_id)},
+                {'$inc': {'closed_tickets': 1}},
+                upsert=True,
+                return_document=True
+            )
+            
+            return result.get('closed_tickets', 1)
+        except Exception as e:
+            print(f"Error updating ticket stats: {e}")
+            return 0
+
+    @commands.command(name="show_ticket_stats")
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    async def show_ticket_stats(self, ctx, user_id: int = None):
+        """
+        Show ticket stats for a user or all users
+        """
+        if user_id:
+            # Fetch stats for specific user
+            user_stats = await self.ticket_stats_collection.find_one({'user_id': str(user_id)})
+            
+            if user_stats:
+                await ctx.send(f"User {user_id} has closed {user_stats.get('closed_tickets', 0)} tickets.")
+            else:
+                await ctx.send(f"No ticket stats found for user {user_id}.")
         else:
-            # Fallback CSV export without pandas
-            csv_content = "User ID,Thread ID,Status,Claimed At\n"
-            for ticket in ticket_data:
-                csv_content += f"{ticket.get('user_id', '')},{ticket.get('thread_id', '')},{ticket.get('status', '')},{ticket.get('claimed_at', '')}\n"
+            # Fetch all user stats
+            all_stats = await self.ticket_stats_collection.find().to_list(length=None)
             
-            filename = f"claimed_tickets_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-            with open(filename, 'w') as f:
-                f.write(csv_content)
+            if all_stats:
+                stats_message = "Ticket Stats:\n"
+                for stat in all_stats:
+                    stats_message += f"User {stat['user_id']}: {stat['closed_tickets']} tickets\n"
+                await ctx.send(stats_message)
+            else:
+                await ctx.send("No ticket stats available.")
+
+    @commands.Cog.listener()
+    async def on_thread_close(self, thread):
+        """
+        Automatically update ticket stats when a thread is closed
+        """
+        # Assuming thread object has a closer attribute with user ID
+        if hasattr(thread, 'closer') and thread.closer:
+            closer_id = thread.closer.id
+            closed_count = await self.update_ticket_stats(closer_id)
             
-            return filename
+            # Optional: Log or notify about ticket closure
+            print(f"User {closer_id} closed a ticket. Total closed tickets: {closed_count}")
+
+    @commands.command(name="sync_ticket_stats")
+    @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
+    async def sync_ticket_stats(self, ctx):
+        """
+        Synchronize ticket stats between different data sources
+        
+        This command will:
+        1. Fetch ticket stats from Modmail's database
+        2. Merge with existing stats in the plugin's database
+        3. Update the consolidated stats
+        """
+        try:
+            # Fetch ticket stats from Modmail's database
+            modmail_stats_collection = self.bot.api.get_shared_partition('ticket_stats')
+            modmail_stats = await modmail_stats_collection.find().to_list(length=None)
+            
+            # Prepare bulk write operations
+            bulk_operations = []
+            for stat in modmail_stats:
+                # Upsert operation to merge or create stats
+                bulk_operations.append(
+                    UpdateOne(
+                        {'user_id': stat['user_id']},
+                        {'$set': stat},
+                        upsert=True
+                    )
+                )
+            
+            # Perform bulk write to consolidate stats
+            if bulk_operations:
+                result = await self.ticket_stats_collection.bulk_write(bulk_operations)
+                await ctx.send(f"Ticket stats synchronized. "
+                               f"Matched: {result.matched_count}, "
+                               f"Modified: {result.modified_count}, "
+                               f"Upserted: {result.upserted_count}")
+            else:
+                await ctx.send("No ticket stats found to synchronize.")
+        
+        except Exception as e:
+            await ctx.send(f"Error synchronizing ticket stats: {e}")
+            print(f"Sync ticket stats error: {e}")
+
+    @commands.command(name="export_ticket_stats")
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    async def export_ticket_stats(self, ctx, days: int = 30):
+        """
+        Export ticket stats to MongoDB collection
+        
+        :param days: Number of days to look back (default 30)
+        """
+        try:
+            # Fetch ticket stats
+            stats_collection = self.ticket_stats_collection
+            
+            # Aggregate stats by user
+            pipeline = [
+                {'$group': {
+                    '_id': '$user_id',
+                    'total_tickets': {'$sum': '$closed_tickets'},
+                    'last_activity': {'$max': '$timestamp'}
+                }},
+                {'$sort': {'total_tickets': -1}}
+            ]
+            
+            stats = await stats_collection.aggregate(pipeline).to_list(length=None)
+            
+            # Create formatted output
+            stats_message = "Ticket Stats Export:\n"
+            for stat in stats:
+                stats_message += (
+                    f"User ID: {stat['_id']}, "
+                    f"Total Tickets Closed: {stat['total_tickets']}, "
+                    f"Last Activity: {stat['last_activity']}\n"
+                )
+            
+            # Send stats to channel
+            await ctx.send(f"```\n{stats_message}\n```")
+        
+        except Exception as e:
+            await ctx.send(f"Error exporting ticket stats: {e}")
+            print(f"Export ticket stats error: {e}")
+
+    async def cog_load(self):
+        """
+        Load saved configuration when the cog is loaded
+        """
+        try:
+            # Try to load previously saved webhook URL
+            config_collection = self.config_collection
+            config = await config_collection.find_one({'_id': 'ticket_export_config'})
+            
+            if config and 'webhook_url' in config:
+                self.ticket_export_webhook = config['webhook_url']
+        except Exception as e:
+            print(f"Error loading ticket export config: {e}")
+            raise
+
+    def cog_unload(self):
+        """
+        Close MongoDB connection when cog is unloaded
+        """
+        if hasattr(self, 'mongo_client'):
+            self.mongo_client.close()
 
     @commands.command(name="set_export_webhook")
     @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
@@ -707,7 +831,7 @@ class ClaimThread(commands.Cog):
                 return
             
             # Save to MongoDB
-            config_collection = self.coll
+            config_collection = self.config_collection
             await config_collection.update_one(
                 {'_id': 'ticket_export_config'},
                 {'$set': {'webhook_url': webhook_url}},
@@ -740,104 +864,163 @@ class ClaimThread(commands.Cog):
         else:
             await ctx.send("Failed to export tickets. Check the logs for more information.")
 
-    async def cog_load(self):
+    async def export_claimed_tickets(self, days=None):
         """
-        Load saved configuration when the cog is loaded
+        Export claimed tickets to a file
+        
+        :param days: Number of days to look back
+        :return: Filename or CSV content
+        """
+        # Prepare query
+        query = {
+            'guild_id': str(self.bot.modmail_guild.id),
+            'claimers': {'$exists': True}
+        }
+        
+        # Add date filter if days specified
+        if days:
+            cutoff_date = datetime.utcnow() - timedelta(days=days)
+            query['claimed_at'] = {'$gte': cutoff_date}
+        
+        ticket_data = []
+        
+        # Fetch tickets
+        async for doc in self.ticket_claims_collection.find(query):
+            ticket_data.append({
+                'user_id': doc.get('user_id', ''),
+                'thread_id': doc.get('thread_id', ''),
+                'status': doc.get('status', ''),
+                'claimed_at': doc.get('claimed_at', '')
+            })
+        
+        # Create DataFrame or CSV
+        if self.pandas_available:
+            df = pd.DataFrame(ticket_data)
+            filename = f"claimed_tickets_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            df.to_excel(filename, index=False)
+            return filename
+        else:
+            # Fallback CSV export without pandas
+            csv_content = "User ID,Thread ID,Status,Claimed At\n"
+            for ticket in ticket_data:
+                csv_content += f"{ticket.get('user_id', '')},{ticket.get('thread_id', '')},{ticket.get('status', '')},{ticket.get('claimed_at', '')}\n"
+            
+            filename = f"claimed_tickets_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            with open(filename, 'w') as f:
+                f.write(csv_content)
+            
+            return filename
+
+    @commands.command(name="claim")
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    async def claim_thread(self, ctx):
+        """
+        Claim the current thread
+        Prevents other supporters from replying
         """
         try:
-            # Try to load previously saved webhook URL
-            config_collection = self.coll
-            config = await config_collection.find_one({'_id': 'ticket_export_config'})
+            # Check if thread is already claimed
+            existing_claim = await self.ticket_claims_collection.find_one({
+                'thread_id': str(ctx.thread.channel.id),
+                'guild_id': str(ctx.guild.id)
+            })
             
-            if config and 'webhook_url' in config:
-                self.ticket_export_webhook = config['webhook_url']
+            if existing_claim:
+                # Check if current user is already a claimer
+                if str(ctx.author.id) in existing_claim.get('claimers', []):
+                    await ctx.send("You have already claimed this thread.")
+                    return
+                
+                # Check claim limits
+                config = await self.get_config()
+                user_claims = await self.count_active_claims(ctx.author.id)
+                
+                if user_claims >= config.get('claim_limit', 5):
+                    await ctx.send(f"You have reached the maximum claim limit of {config['claim_limit']} threads.")
+                    return
+                
+                # Add current user to claimers
+                await self.ticket_claims_collection.find_one_and_update(
+                    {'thread_id': str(ctx.thread.channel.id), 'guild_id': str(ctx.guild.id)},
+                    {'$addToSet': {'claimers': str(ctx.author.id)}}
+                )
+            else:
+                # Create new claim
+                await self.ticket_claims_collection.insert_one({
+                    'thread_id': str(ctx.thread.channel.id),
+                    'guild_id': str(ctx.guild.id),
+                    'claimers': [str(ctx.author.id)],
+                    'claimed_at': datetime.utcnow(),
+                    'status': 'active'
+                })
+            
+            await ctx.send(f"Thread claimed by {ctx.author.mention}")
+        
         except Exception as e:
-            print(f"Error loading ticket export config: {e}")
+            await ctx.send(f"Error claiming thread: {e}")
+            print(f"Claim thread error: {e}")
 
-    async def cog_unload(self):
+    async def count_active_claims(self, user_id):
         """
-        Close MongoDB connection when cog is unloaded
+        Count active claims for a specific user
+        
+        :param user_id: ID of the user
+        :return: Number of active claims
         """
-        if hasattr(self, 'coll'):
-            pass
+        active_claims = await self.ticket_claims_collection.count_documents({
+            'claimers': str(user_id),
+            'status': 'active'
+        })
+        return active_claims
 
-    async def update_ticket_stats(self, user_id):
+    @commands.command(name="unclaim")
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    async def unclaim_thread(self, ctx):
         """
-        Update ticket stats for a user in shared MongoDB and trigger webhook
+        Unclaim the current thread
+        Allows other supporters to claim and reply
         """
-        # Find and update user stats atomically
-        result = await self.coll.find_one_and_update(
-            {'user_id': user_id},
-            {'$inc': {'closed_tickets': 1}},
-            upsert=True,
-            return_document=True
+        try:
+            result = await self.ticket_claims_collection.find_one_and_update(
+                {
+                    'thread_id': str(ctx.thread.channel.id),
+                    'guild_id': str(ctx.guild.id),
+                    'claimers': str(ctx.author.id)
+                },
+                {
+                    '$pull': {'claimers': str(ctx.author.id)},
+                    '$set': {'status': 'unclaimed' if len(self.claimers) == 0 else 'active'}
+                }
+            )
+            
+            if result:
+                await ctx.send(f"Thread unclaimed by {ctx.author.mention}")
+            else:
+                await ctx.send("You haven't claimed this thread.")
+        
+        except Exception as e:
+            await ctx.send(f"Error unclaiming thread: {e}")
+            print(f"Unclaim thread error: {e}")
+
+    @commands.command(name="set_claim_limit")
+    @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
+    async def set_claim_limit(self, ctx, limit: int):
+        """
+        Set the maximum number of threads a supporter can claim
+        
+        :param limit: Maximum number of active claims
+        """
+        if limit < 0:
+            await ctx.send("Claim limit cannot be negative.")
+            return
+        
+        await self.config_collection.update_one(
+            {'_id': 'claim_config'},
+            {'$set': {'claim_limit': limit}},
+            upsert=True
         )
         
-        # Extract updated ticket count
-        closed_tickets = result.get('closed_tickets', 1) if result else 1
-        
-        # Send via webhook from environment variable
-        webhook_url = os.getenv('TICKET_STATS_WEBHOOK_URL')
-        if webhook_url:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    stats_payload = {
-                        'user_id': user_id,
-                        'closed_tickets': closed_tickets
-                    }
-                    
-                    async with session.post(
-                        webhook_url, 
-                        json=stats_payload
-                    ) as response:
-                        if response.status == 200:
-                            print(f"Successfully exported claims to {filename}")
-                            return filename
-                        else:
-                            print(f"Failed to send webhook: {response.status}")
-                            return None
-            except Exception as e:
-                print(f"Error sending webhook: {e}")
-                return None
-
-    @commands.command(name="show_ticket_stats")
-    @checks.has_permissions(PermissionLevel.SUPPORTER)
-    async def show_ticket_stats(self, ctx, user_id: int = None):
-        """
-        Show ticket stats for a user or all users
-        """
-        if user_id:
-            # Fetch stats for specific user
-            user_stats = await self.coll.find_one({'user_id': user_id})
-            
-            if user_stats:
-                await ctx.send(f"User {user_id} has closed {user_stats.get('closed_tickets', 0)} tickets.")
-            else:
-                await ctx.send(f"No ticket stats found for user {user_id}.")
-        else:
-            # Fetch all user stats
-            all_stats = await self.coll.find().to_list(length=None)
-            
-            if all_stats:
-                stats_message = "Ticket Stats:\n"
-                for stat in all_stats:
-                    stats_message += f"User {stat['user_id']}: {stat['closed_tickets']} tickets\n"
-                await ctx.send(stats_message)
-            else:
-                await ctx.send("No ticket stats available.")
-
-    @commands.Cog.listener()
-    async def on_thread_close(self, thread):
-        """
-        Automatically update ticket stats when a thread is closed
-        """
-        # Assuming thread object has a closer attribute with user ID
-        if hasattr(thread, 'closer') and thread.closer:
-            closer_id = thread.closer.id
-            closed_count = await self.update_ticket_stats(closer_id)
-            
-            # Optional: Log or notify about ticket closure
-            print(f"User {closer_id} closed a ticket. Total closed tickets: {closed_count}")
+        await ctx.send(f"Claim limit set to {limit} threads.")
 
 async def setup(bot):
     """
