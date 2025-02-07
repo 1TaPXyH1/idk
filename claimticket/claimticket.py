@@ -49,33 +49,30 @@ async def is_in_thread(ctx):
 
 class ClaimThread(commands.Cog):
     """Allows supporters to claim thread by sending claim in the thread channel"""
-    def __init__(self, bot):
-        self.bot = bot
-        
-        # MongoDB connection details
-        self.mongo_uri = os.getenv('MONGODB_URI', '')
-        self.mongo_db_name = os.getenv('MONGODB_DATABASE', 'modmail')
-        
-        # Initialize MongoDB client and database
-        self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(self.mongo_uri)
-        self.mongo_db = self.mongo_client[self.mongo_db_name]
-        
-        # Initialize collections
-        self.ticket_stats_collection = self.mongo_db['ticket_stats']
-        self.config_collection = self.mongo_db['plugin_configs']
-        
-        # Ticket-related attributes
-        self.active_tickets = {}
-        self.check_message_cache = {}
-        
-        # Start background tasks
-        self.bot.loop.create_task(self.initialize_mongodb())
-
     async def initialize_mongodb(self):
         """
-        Initialize and verify MongoDB collections
+        Initialize MongoDB connection and collections
         """
         try:
+            # Establish MongoDB connection
+            self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(self.mongo_uri)
+            
+            # Select database
+            self.mongo_db = self.mongo_client[self.mongo_db_name]
+            
+            # Initialize collections with error suppression
+            try:
+                # Ticket stats collection
+                self.ticket_stats_collection = self.mongo_db['ticket_stats']
+                
+                # Configuration collection
+                self.config_collection = self.mongo_db['plugin_configs']
+                
+            except Exception as collection_error:
+                # Ensure collections exist even if initialization fails
+                self.ticket_stats_collection = self.mongo_db['ticket_stats']
+                self.config_collection = self.mongo_db['plugin_configs']
+            
             # Verify plugin configuration collection
             config_exists = await self.config_collection.find_one({'_id': 'claim_config'})
             if not config_exists:
@@ -84,45 +81,82 @@ class ClaimThread(commands.Cog):
                     'claim_limit': 5,
                     'override_roles': []
                 })
-            
-            # Perform data migration to ensure consistent schema
-            await self.migrate_ticket_stats_collection()
         
-        except Exception:
-            # Silently handle initialization errors
-            pass
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
 
-    async def migrate_ticket_stats_collection(self):
-        """
-        Migrate existing ticket stats to use consistent schema
-        """
-        try:
-            # Find documents with old 'thread_id' key
-            old_docs = await self.ticket_stats_collection.find({
-                'thread_id': {'$exists': True}
-            }).to_list(length=None)
-            
-            # Migrate each document
-            for doc in old_docs:
-                # Create new document with correct keys
-                new_doc = {
-                    'channel_id': doc.get('thread_id', doc.get('_id')),
-                    'guild_id': doc.get('guild_id', 'unknown'),
-                    'current_state': doc.get('current_state', 'unknown'),
-                    'moderator_id': doc.get('moderator_id'),
-                    'created_at': doc.get('created_at'),
-                    'closed_at': doc.get('closed_at')
-                }
-                
-                # Replace old document with new one
-                await self.ticket_stats_collection.replace_one(
-                    {'_id': doc['_id']},
-                    new_doc
-                )
+    def __init__(self, bot):
+        self.bot = bot
         
-        except Exception:
-            # Silently handle migration errors
-            pass
+        # Reintroduce check_message_cache with minimal implementation
+        self.check_message_cache = {}
+        
+        # Comprehensive environment variable logging
+        mongodb_env_vars = [
+            'MONGODB_URI', 'MONGODB_DATABASE', 'MONGODB_USERNAME', 
+            'MONGODB_PASSWORD', 'MONGODB_CLUSTER_URL', 'MONGODB_OPTIONS'
+        ]
+        for key in mongodb_env_vars:
+            print(f"  {key}: {os.getenv(key, 'Not Set')}")
+        
+        # Hardcoded fallback values
+        FALLBACK_MONGODB_USERNAME = '111iotapxrb'
+        FALLBACK_MONGODB_PASSWORD = 'fEJdHM55QIYPVBDb'
+        FALLBACK_MONGODB_CLUSTER_URL = 'tickets.eqqut.mongodb.net'
+        FALLBACK_MONGODB_OPTIONS = 'retryWrites=true&w=majority&appName=Tickets'
+        FALLBACK_MONGODB_DATABASE = 'Tickets'
+        
+        # Prioritize connection strategies with more robust fallback
+        def get_env_with_fallback(primary_key, fallback_value):
+            value = os.getenv(primary_key, fallback_value)
+            print(f"🌐 Selected {primary_key}: {value}")
+            return value
+        
+        # Construct MongoDB URI dynamically
+        mongodb_username = get_env_with_fallback('MONGODB_USERNAME', FALLBACK_MONGODB_USERNAME)
+        mongodb_password = get_env_with_fallback('MONGODB_PASSWORD', FALLBACK_MONGODB_PASSWORD)
+        mongodb_cluster_url = get_env_with_fallback('MONGODB_CLUSTER_URL', FALLBACK_MONGODB_CLUSTER_URL)
+        mongodb_options = get_env_with_fallback('MONGODB_OPTIONS', FALLBACK_MONGODB_OPTIONS)
+        
+        # Fallback to direct URI if not constructed from components
+        self.mongo_uri = (
+            get_env_with_fallback('MONGODB_URI', 
+                f"mongodb+srv://{mongodb_username}:{mongodb_password}@{mongodb_cluster_url}/?{mongodb_options}"
+            )
+        )
+        
+        self.mongo_db_name = get_env_with_fallback(
+            'MONGODB_DATABASE', 
+            FALLBACK_MONGODB_DATABASE
+        )
+        
+        # Validate MongoDB URI
+        try:
+            from urllib.parse import urlparse
+            parsed_uri = urlparse(self.mongo_uri)
+            
+            # Additional validation
+            if not parsed_uri.hostname:
+                raise ValueError("Invalid MongoDB hostname")
+        except Exception as uri_parse_error:
+            # Force fallback URI if parsing fails
+            self.mongo_uri = f"mongodb+srv://{FALLBACK_MONGODB_USERNAME}:{FALLBACK_MONGODB_PASSWORD}@{FALLBACK_MONGODB_CLUSTER_URL}/?{FALLBACK_MONGODB_OPTIONS}"
+        
+        # Schedule MongoDB initialization
+        self.bot.loop.create_task(self.initialize_mongodb())
+        
+        # Initialize necessary attributes
+        self.default_config = {
+            'claim_limit': 5,  # Default claim limit
+            'override_roles': []  # Default override roles
+        }
+        
+        # Ticket export webhook (optional)
+        self.ticket_export_webhook = None
+
+        # Start background channel verification
+        self.bot.loop.create_task(self.background_channel_check())
 
     async def background_channel_check(self):
         """
@@ -140,12 +174,7 @@ class ClaimThread(commands.Cog):
                 
                 for ticket in active_tickets:
                     try:
-                        # Safely get channel_id with fallback
-                        channel_id = ticket.get('channel_id') or ticket.get('thread_id')
-                        if not channel_id:
-                            continue
-                        
-                        channel_id = int(channel_id)
+                        channel_id = int(ticket['channel_id'])
                         guild_id = int(ticket.get('guild_id', 0))
                         
                         # Find the guild
@@ -191,8 +220,8 @@ class ClaimThread(commands.Cog):
         """
         config = await self.config_collection.find_one({'_id': 'claim_config'}) or {}
         return {
-            'claim_limit': config.get('claim_limit', 5),
-            'override_roles': config.get('override_roles', [])
+            'claim_limit': config.get('claim_limit', self.default_config['claim_limit']),
+            'override_roles': config.get('override_roles', self.default_config['override_roles'])
         }
 
     async def handle_rate_limit(self, ctx):
@@ -495,12 +524,12 @@ class ClaimThread(commands.Cog):
             except Exception:
                 is_closed = False
             
-            channel_id = str(thread.id)
+            thread_id = str(thread.id)
             guild_id = str(thread.guild.id) if thread.guild else 'unknown'
             
             # Prepare stats document
             stats_doc = {
-                'channel_id': channel_id,
+                'channel_id': thread_id,
                 'guild_id': guild_id,
                 'created_at': thread.created_at,
                 'moderator_id': str(closer.id) if closer else None,
@@ -512,7 +541,7 @@ class ClaimThread(commands.Cog):
             try:
                 # Try to find existing document for this thread
                 existing_doc = await self.ticket_stats_collection.find_one({
-                    'channel_id': channel_id,
+                    'channel_id': thread_id,
                     'guild_id': guild_id
                 })
                 
@@ -602,7 +631,7 @@ class ClaimThread(commands.Cog):
         try:
             # Count active claims using ticket stats collection
             active_claims = await self.ticket_stats_collection.count_documents({
-                'moderator_id': str(user_id),
+                'last_user_id': str(user_id),
                 'current_state': {'$ne': 'closed'}
             })
             return active_claims
@@ -710,11 +739,11 @@ class ClaimThread(commands.Cog):
             # Silently handle any unexpected errors
             pass
 
-    async def verify_thread_closure(self, channel_id, timeout=300):
+    async def verify_thread_closure(self, thread_id, timeout=300):
         """
         Verify if a thread is actually closed
         
-        :param channel_id: ID of the thread to check
+        :param thread_id: ID of the thread to check
         :param timeout: Maximum time to wait for closure (in seconds)
         :return: Boolean indicating if thread is closed
         """
@@ -723,7 +752,7 @@ class ClaimThread(commands.Cog):
         while (datetime.utcnow() - start_time).total_seconds() < timeout:
             try:
                 # Attempt to fetch the thread
-                thread = self.bot.get_channel(channel_id)
+                thread = self.bot.get_channel(thread_id)
                 
                 # Check thread state
                 if thread is None:
