@@ -696,11 +696,11 @@ class ClaimThread(commands.Cog):
 
     async def update_ticket_stats(self, thread, closer):
         """
-        Update ticket statistics when a thread is closed
+        Update ticket statistics when a thread is created or closed
         
         Args:
-            thread: The thread being closed
-            closer: The user who closed the thread
+            thread: The thread being tracked
+            closer: The user who closed the thread (optional)
         """
         try:
             # Extensive logging for debugging
@@ -713,17 +713,23 @@ class ClaimThread(commands.Cog):
                 print("❌ Thread is None, cannot log stats")
                 return
             
-            # Determine thread status
+            # Determine thread status and lifecycle
             is_closed = getattr(thread, 'closed', False)
-            print(f"  Thread Closed Status: {is_closed}")
+            thread_id = str(thread.id)
+            guild_id = str(thread.guild.id) if thread.guild else 'unknown'
             
             # Prepare stats document
             stats_doc = {
-                'thread_id': str(thread.id),
-                'guild_id': str(thread.guild.id) if thread.guild else 'unknown',
+                'thread_id': thread_id,
+                'guild_id': guild_id,
                 'moderator_id': str(closer.id) if closer else 'unknown',
-                'closed_at': datetime.utcnow(),
-                'status': 'closed' if is_closed else 'active'
+                'created_at': thread.created_at,
+                'closed_at': datetime.utcnow() if is_closed else None,
+                'status': 'closed' if is_closed else 'open',
+                'lifecycle': {
+                    'created': True,
+                    'closed': is_closed
+                }
             }
             
             # Log document details
@@ -731,18 +737,28 @@ class ClaimThread(commands.Cog):
             for key, value in stats_doc.items():
                 print(f"  {key}: {value}")
             
-            # Insert stats document
+            # Insert or update stats document
             try:
-                result = await self.ticket_stats_collection.insert_one(stats_doc)
+                # Try to find existing document for this thread
+                existing_doc = await self.ticket_stats_collection.find_one({
+                    'thread_id': thread_id,
+                    'guild_id': guild_id
+                })
                 
-                if result.inserted_id:
-                    print(f"✅ Ticket stats logged successfully")
-                    print(f"  Inserted ID: {result.inserted_id}")
+                if existing_doc:
+                    # Update existing document
+                    update_result = await self.ticket_stats_collection.update_one(
+                        {'_id': existing_doc['_id']},
+                        {'$set': stats_doc}
+                    )
+                    print(f"✅ Updated existing ticket stats: {update_result.modified_count} document(s)")
                 else:
-                    print("❌ Failed to log ticket stats")
+                    # Insert new document
+                    result = await self.ticket_stats_collection.insert_one(stats_doc)
+                    print(f"✅ Inserted new ticket stats. Inserted ID: {result.inserted_id}")
             
             except Exception as insert_error:
-                print(f"❌ MongoDB Insertion Error: {insert_error}")
+                print(f"❌ MongoDB Insertion/Update Error: {insert_error}")
                 import traceback
                 traceback.print_exc()
         
