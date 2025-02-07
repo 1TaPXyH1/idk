@@ -220,8 +220,17 @@ class ClaimThread(commands.Cog):
                             # Channel deleted, notify last claimer
                             if ticket.get('moderator_id'):
                                 try:
+                                    # Fetch user and get ticket closure stats
                                     user = await self.bot.fetch_user(int(ticket['moderator_id']))
-                                    await user.send(f"Your ticket has been closed. The support channel was deleted.")
+                                    stats = await self.get_ticket_closure_stats(ticket['moderator_id'])
+                                    
+                                    # Construct personalized message
+                                    message = (
+                                        f"Congrats on closing your {stats['daily_tickets']} ticket of the day! "
+                                        f"This is your {stats['monthly_tickets']} ticket of the month."
+                                    )
+                                    
+                                    await user.send(message)
                                     
                                     # Mark this ticket as notified
                                     self.notified_closed_tickets.add(channel_id)
@@ -324,123 +333,159 @@ class ClaimThread(commands.Cog):
 
         return None  # Don't fetch if not in cache
 
-    @commands.command(name="lb")
-    async def claim_leaderboard(self, ctx, days: int = None):
-        """Show claim leaderboard
-        
-        Usage:
-        !lb [days] - Show leaderboard for specified days (optional)
+    async def is_moderator(self, member):
         """
-        claims = {}
-        total_claims = {}
+        Check if a user has moderator permissions
         
-        # Calculate cutoff date if days specified
-        cutoff_date = None
-        if days:
-            cutoff_date = datetime.utcnow() - timedelta(days=days)
+        :param member: Discord member to check
+        :return: Boolean indicating moderator status
+        """
+        return member.guild_permissions.administrator or \
+               any(role.permissions.administrator for role in member.roles) or \
+               checks.has_permissions(PermissionLevel.MODERATOR)(SimpleNamespace(author=member))
+
+    async def get_ticket_claimer(self, channel_id):
+        """
+        Retrieve the current ticket claimer
         
-        async for doc in self.ticket_stats_collection.find(
-            {
-                'guild_id': str(self.bot.modmail_guild.id),
-                'last_user_id': {'$exists': True}
-            }
-        ):
-            # Skip if before cutoff date
-            if cutoff_date and 'created_at' in doc:
-                created_at = datetime.fromisoformat(doc['created_at'])
-                if created_at < cutoff_date:
-                    continue
-                    
-            last_user_id = doc['last_user_id']
-            total_claims[last_user_id] = total_claims.get(last_user_id, 0) + 1
-            # Check if claim is active
-            if doc['current_state'] != 'closed':
-                claims[last_user_id] = claims.get(last_user_id, 0) + 1
+        :param channel_id: ID of the channel
+        :return: Moderator ID or None
+        """
+        ticket = await self.ticket_stats_collection.find_one({
+            'channel_id': str(channel_id),
+            'current_state': {'$ne': 'closed'}
+        })
+        return ticket.get('moderator_id') if ticket else None
 
-        if not total_claims:
-            embed = discord.Embed(
-                title="Claims Leaderboard",
-                description="No claims found",
-                color=self.bot.main_color
-            )
-            return await ctx.send(embed=embed)
+    @commands.command(name="claim")
+    @commands.check(is_in_thread)
+    async def claim_thread(self, ctx):
+        """
+        Claim the current ticket thread
+        """
+        # Get the current thread
+        thread = ctx.channel
 
-        sorted_claims = sorted(total_claims.items(), key=lambda x: x[1], reverse=True)[:10]
+        # Check if ticket is already claimed
+        current_claimer = await self.get_ticket_claimer(thread.id)
+        if current_claimer and current_claimer != str(ctx.author.id):
+            await ctx.message.add_reaction('🚫')
+            return
+
+        # Log ticket stats when claimed
+        await self.update_ticket_stats(thread, ctx.author)
         
-        description = []
-        for i, (user_id, claim_count) in enumerate(sorted_claims, 1):
-            user = await self.get_user(int(user_id))
-            name = user.name if user else f"User {user_id}"
-            active = claims.get(user_id, 0)
-            
-            claim_text = "claim" if claim_count == 1 else "claims"
-            description.append(
-                f"{i}.  {name}     |  {claim_count} {claim_text}  |  {active} active"
-            )
-
-        embed = discord.Embed(
-            title="Claims Leaderboard",
-            description="\n".join(description),
-            color=self.bot.main_color
+        # Dispatch state change event
+        await self.on_thread_state_change(
+            thread, 
+            'claimed', 
+            ctx.author
         )
-        
+
+        # Delete the claim command message
+        try:
+            await ctx.message.delete()
+        except:
+            pass
+
+        # Send claim embed
+        embed = discord.Embed(
+            description=f"{ctx.author.mention} claimed the ticket.",
+            color=discord.Color.orange()
+        )
         await ctx.send(embed=embed)
 
-    @checks.has_permissions(PermissionLevel.SUPPORTER)
-    @checks.thread_only()
-    @commands.command()
-    async def thread_claim(self, ctx):
-        """Claim a thread without renaming"""
+    @commands.command(name="unclaim")
+    @commands.check(is_in_thread)
+    async def unclaim_thread(self, ctx):
+        """
+        Unclaim the current ticket thread
+        """
+        # Get the current thread
+        thread = ctx.channel
+
+        # Check if the user is the current claimer or a moderator
+        current_claimer = await self.get_ticket_claimer(thread.id)
+        if not current_claimer or (
+            str(ctx.author.id) != current_claimer and 
+            not await self.is_moderator(ctx.author)
+        ):
+            await ctx.message.add_reaction('🚫')
+            return
+
+        # Check if thread is closed
+        is_thread_closed = thread.closed if hasattr(thread, 'closed') else False
+
+        # Log ticket stats when unclaimed
+        await self.update_ticket_stats(thread, None if is_thread_closed else ctx.author)
+        
+        # Dispatch state change event
+        await self.on_thread_state_change(
+            thread, 
+            'unclaimed', 
+            ctx.author
+        )
+
+        # Delete the unclaim command message
         try:
-            # Only handle subscription
-            if str(ctx.thread.id) not in self.bot.config["subscriptions"]:
-                self.bot.config["subscriptions"][str(ctx.thread.id)] = []
-            if ctx.author.mention not in self.bot.config["subscriptions"][str(ctx.thread.id)]:
-                self.bot.config["subscriptions"][str(ctx.thread.id)].append(ctx.author.mention)
-                await self.bot.config.update()
-
-            embed = discord.Embed(
-                color=self.bot.main_color,
-                description=f"Successfully claimed the thread.\n{ctx.author.mention} is now subscribed to this thread."
-            )
-            await ctx.send(embed=embed)
+            await ctx.message.delete()
         except:
-            await ctx.message.add_reaction('❌')
+            pass
 
-    @checks.has_permissions(PermissionLevel.SUPPORTER)
-    @checks.thread_only()
-    @commands.command()
-    async def thread_unclaim(self, ctx):
-        """Unclaim a thread without renaming"""
-        try:
-            # Only handle unsubscription
-            if ctx.author.mention in self.bot.config["subscriptions"].get(str(ctx.thread.id), []):
-                self.bot.config["subscriptions"][str(ctx.thread.id)].remove(ctx.author.mention)
-                await self.bot.config.update()
-            
-            embed = discord.Embed(
-                color=self.bot.main_color,
-                description=f"Removed from claimers.\n{ctx.author.mention} is now unsubscribed from this thread."
-            )
-            await ctx.send(embed=embed)
-        except:
-            await ctx.message.add_reaction('❌')
+        # Send unclaim embed
+        embed = discord.Embed(
+            description=f"{ctx.author.mention} unclaimed the ticket.",
+            color=discord.Color.dark_orange()
+        )
+        await ctx.send(embed=embed)
 
-    @checks.has_permissions(PermissionLevel.SUPPORTER)
-    @checks.thread_only()
-    @commands.command()
+    @commands.command(name="rename")
+    @commands.check(is_in_thread)
     async def rename(self, ctx, *, new_name: str):
-        """Rename the thread channel (optional command)"""
+        """Rename the thread channel"""
         try:
             await ctx.thread.channel.edit(name=new_name)
-            await ctx.message.add_reaction('✅')
+            
+            # Send rename embed
+            embed = discord.Embed(
+                description=f"Channel name changed to `{new_name}`. Please don't use this command too often.",
+                color=discord.Color.gold()
+            )
+            await ctx.send(embed=embed)
         except:
             await ctx.message.add_reaction('❌')
 
-    @checks.has_permissions(PermissionLevel.MODERATOR)
+    @commands.check(is_in_thread)
+    async def check_thread_permissions(ctx):
+        """
+        Check if the user has permission to interact with the thread
+        """
+        # Get the current thread
+        thread = ctx.channel
+
+        # Check if user is a moderator
+        if await self.is_moderator(ctx.author):
+            return True
+
+        # Get current ticket claimer
+        current_claimer = await self.get_ticket_claimer(thread.id)
+        
+        # Allow only the claimer to interact
+        if current_claimer and str(ctx.author.id) == current_claimer:
+            return True
+        
+        # Block other users
+        await ctx.message.add_reaction('🚫')
+        return False
+
     @commands.group(name='claimconfig', invoke_without_command=True)
+    @checks.has_permissions(PermissionLevel.MODERATOR)
     async def claim_config(self, ctx):
         """Configure claim limit"""
+        if not await self.is_moderator(ctx.author):
+            await ctx.message.add_reaction('🚫')
+            return
+
         if ctx.invoked_subcommand is None:
             config = await self.get_config()
             embed = discord.Embed(
@@ -452,8 +497,13 @@ class ClaimThread(commands.Cog):
             await ctx.send(embed=embed)
 
     @claim_config.command(name='limit')
+    @checks.has_permissions(PermissionLevel.MODERATOR)
     async def set_claim_limit(self, ctx, limit: int):
         """Set the maximum number of claims per user (0 for unlimited)"""
+        if not await self.is_moderator(ctx.author):
+            await ctx.message.add_reaction('🚫')
+            return
+
         if limit < 0:
             return await ctx.send("Limit cannot be negative")
             
@@ -466,29 +516,37 @@ class ClaimThread(commands.Cog):
         limit_text = str(limit) if limit > 0 else "unlimited"
         await ctx.send(f"Claim limit set to {limit_text}")
 
-    @checks.has_permissions(PermissionLevel.MODERATOR)
     @commands.group(name='override', invoke_without_command=True)
+    @checks.has_permissions(PermissionLevel.MODERATOR)
     async def claim_override(self, ctx):
         """Manage override roles for claims"""
-        if ctx.invoked_subcommand is None:
-            config = await self.config_collection.find_one({'_id': 'claim_config'})
-            
-            override_roles = []
-            for role_id in config['override_roles']:
-                if role := ctx.guild.get_role(role_id):
-                    override_roles.append(role.mention)
-            
-            embed = discord.Embed(
-                title="Claim Override Roles",
-                description="Roles that can override claimed tickets:\n" + 
-                           ("\n".join(override_roles) if override_roles else "No roles set"),
-                color=self.bot.main_color
-            )
-            await ctx.send(embed=embed)
+        if not await self.is_moderator(ctx.author):
+            await ctx.message.add_reaction('🚫')
+            return
+
+        config = await self.config_collection.find_one({'_id': 'claim_config'})
+        
+        override_roles = []
+        for role_id in config['override_roles']:
+            if role := ctx.guild.get_role(role_id):
+                override_roles.append(role.mention)
+        
+        embed = discord.Embed(
+            title="Claim Override Roles",
+            description="Roles that can override claimed tickets:\n" + 
+                       ("\n".join(override_roles) if override_roles else "No roles set"),
+            color=self.bot.main_color
+        )
+        await ctx.send(embed=embed)
 
     @claim_override.command(name='add')
+    @checks.has_permissions(PermissionLevel.MODERATOR)
     async def override_add(self, ctx, *, role: discord.Role):
         """Add a role to override claims"""
+        if not await self.is_moderator(ctx.author):
+            await ctx.message.add_reaction('🚫')
+            return
+
         config = await self.config_collection.find_one({'_id': 'claim_config'}) or {}
         override_roles = config.get('override_roles', [])
         
@@ -505,8 +563,13 @@ class ClaimThread(commands.Cog):
         await ctx.send(f"Added {role.mention} to override roles")
 
     @claim_override.command(name='remove')
+    @checks.has_permissions(PermissionLevel.MODERATOR)
     async def override_remove(self, ctx, *, role: discord.Role):
         """Remove a role from override claims"""
+        if not await self.is_moderator(ctx.author):
+            await ctx.message.add_reaction('🚫')
+            return
+
         config = await self.config_collection.find_one({'_id': 'claim_config'}) or {}
         override_roles = config.get('override_roles', [])
         
@@ -521,6 +584,42 @@ class ClaimThread(commands.Cog):
         )
         
         await ctx.send(f"Removed {role.mention} from override roles")
+
+    @commands.command(name="tickets")
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    async def user_tickets(self, ctx, user: discord.User = None, days: int = 30):
+        """
+        Show closed tickets for a user within specified days
+        
+        Usage:
+        !tickets [user] [days]
+        Default is the command invoker and last 30 days
+        """
+        # Use command invoker if no user specified
+        target_user = user or ctx.author
+        
+        # Validate days input
+        days = max(1, min(days, 365))  # Limit between 1 and 365 days
+        
+        # Calculate cutoff date
+        cutoff_date = datetime.utcnow() - timedelta(days=days)
+        
+        # Query closed tickets for the user
+        closed_tickets = await self.ticket_stats_collection.find({
+            'moderator_id': str(target_user.id),
+            'current_state': 'closed',
+            'closed_at': {'$gte': cutoff_date}
+        }).to_list(length=None)
+        
+        # Create an embed to display ticket information
+        embed = discord.Embed(
+            title="🎫 Closed Tickets Summary",
+            description=f"{target_user.mention} has closed **{len(closed_tickets)}** tickets in the last **{days}** days.",
+            color=self.bot.main_color
+        )
+        
+        # Send the embed
+        await ctx.send(embed=embed)
 
     async def update_ticket_stats(self, thread, closer):
         """
@@ -598,123 +697,6 @@ class ClaimThread(commands.Cog):
             # Silently handle any unexpected errors
             pass
 
-    @commands.command(name="claim")
-    @commands.check(is_in_thread)
-    async def claim_thread(self, ctx):
-        """
-        Claim the current ticket thread
-        """
-        # Get the current thread
-        thread = ctx.channel
-
-        # Log ticket stats when claimed
-        await self.update_ticket_stats(thread, ctx.author)
-        
-        # Dispatch state change event
-        await self.on_thread_state_change(
-            thread, 
-            'claimed', 
-            ctx.author
-        )
-
-        await ctx.send(f"✅ {ctx.author.mention} has acknowledged this ticket.")
-
-    @commands.command(name="unclaim")
-    @commands.check(is_in_thread)
-    async def unclaim_thread(self, ctx):
-        """
-        Unclaim the current ticket thread
-        """
-        # Get the current thread
-        thread = ctx.channel
-
-        # Check if thread is closed
-        is_thread_closed = thread.closed if hasattr(thread, 'closed') else False
-
-        # Log ticket stats when unclaimed
-        await self.update_ticket_stats(thread, None if is_thread_closed else ctx.author)
-        
-        # Dispatch state change event
-        await self.on_thread_state_change(
-            thread, 
-            'unclaimed', 
-            ctx.author
-        )
-
-        await ctx.send(f"✅ Ticket status reset.")
-
-    @commands.command(name="thread_claim")
-    @checks.has_permissions(PermissionLevel.SUPPORTER)
-    async def thread_claim(self, ctx):
-        """
-        Claim the current thread
-        Prevents other supporters from replying
-        """
-        try:
-            # Check claim limits
-            config = await self.get_config()
-            user_claims = await self.count_active_claims(ctx.author.id)
-            
-            if user_claims >= config.get('claim_limit', 5):
-                await ctx.send(f"You have reached the maximum claim limit of {config['claim_limit']} threads.")
-                return
-            
-            await ctx.send(f"Thread claimed by {ctx.author.mention}")
-        
-        except Exception as e:
-            await ctx.send(f"Error claiming thread: {e}")
-
-    async def count_active_claims(self, user_id):
-        """
-        Count active claims for a specific user
-        
-        :param user_id: ID of the user
-        :return: Number of active claims
-        """
-        try:
-            # Count active claims using ticket stats collection
-            active_claims = await self.ticket_stats_collection.count_documents({
-                'last_user_id': str(user_id),
-                'current_state': {'$ne': 'closed'}
-            })
-            return active_claims
-        except Exception:
-            # Silently handle any unexpected errors
-            return 0
-
-    @commands.command(name="thread_unclaim")
-    @checks.has_permissions(PermissionLevel.SUPPORTER)
-    async def thread_unclaim(self, ctx):
-        """
-        Unclaim the current thread
-        Allows other supporters to claim and reply
-        """
-        try:
-            await ctx.send(f"Thread unclaimed by {ctx.author.mention}")
-        
-        except Exception as e:
-            await ctx.send(f"Error unclaiming thread: {e}")
-
-    @commands.command(name="set_claim_limit")
-    @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
-    async def set_claim_limit(self, ctx, limit: int):
-        """
-        Set the maximum number of threads a supporter can claim
-        
-        :param limit: Maximum number of active claims
-        """
-        if limit < 0:
-            await ctx.send("Claim limit cannot be negative.")
-            return
-        
-        await self.config_collection.update_one(
-            {'_id': 'claim_config'},
-            {'$set': {'claim_limit': limit}},
-            upsert=True
-        )
-        
-        await ctx.send(f"Claim limit set to {limit} threads.")
-
     async def on_thread_state_change(self, thread, state, user=None):
         """
         Centralized event listener for ticket state changes
@@ -782,6 +764,42 @@ class ClaimThread(commands.Cog):
             # Silently handle any unexpected errors
             pass
 
+    async def get_ticket_closure_stats(self, moderator_id):
+        """
+        Calculate daily and monthly ticket closure statistics
+        
+        :param moderator_id: ID of the moderator
+        :return: Dictionary with daily and monthly ticket closure counts
+        """
+        # Get current time
+        now = datetime.utcnow()
+        
+        # Calculate start of today and start of this month
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        
+        # Convert moderator_id to string for database query
+        str_moderator_id = str(moderator_id)
+        
+        # Count daily closed tickets
+        daily_tickets = await self.ticket_stats_collection.count_documents({
+            'moderator_id': str_moderator_id,
+            'current_state': 'closed',
+            'closed_at': {'$gte': today_start}
+        })
+        
+        # Count monthly closed tickets
+        monthly_tickets = await self.ticket_stats_collection.count_documents({
+            'moderator_id': str_moderator_id,
+            'current_state': 'closed',
+            'closed_at': {'$gte': month_start}
+        })
+        
+        return {
+            'daily_tickets': daily_tickets,
+            'monthly_tickets': monthly_tickets
+        }
+
     async def verify_thread_closure(self, thread_id, timeout=300):
         """
         Verify if a thread is actually closed
@@ -824,42 +842,6 @@ class ClaimThread(commands.Cog):
         
         # Timeout reached without confirmation
         return False
-
-    @commands.command(name="tickets")
-    @checks.has_permissions(PermissionLevel.SUPPORTER)
-    async def user_tickets(self, ctx, user: discord.User = None, days: int = 30):
-        """
-        Show closed tickets for a user within specified days
-        
-        Usage:
-        !tickets [user] [days]
-        Default is the command invoker and last 30 days
-        """
-        # Use command invoker if no user specified
-        target_user = user or ctx.author
-        
-        # Validate days input
-        days = max(1, min(days, 365))  # Limit between 1 and 365 days
-        
-        # Calculate cutoff date
-        cutoff_date = datetime.utcnow() - timedelta(days=days)
-        
-        # Query closed tickets for the user
-        closed_tickets = await self.ticket_stats_collection.find({
-            'moderator_id': str(target_user.id),
-            'current_state': 'closed',
-            'closed_at': {'$gte': cutoff_date}
-        }).to_list(length=None)
-        
-        # Create an embed to display ticket information
-        embed = discord.Embed(
-            title="🎫 Closed Tickets Summary",
-            description=f"{target_user.mention} has closed **{len(closed_tickets)}** tickets in the last **{days}** days.",
-            color=self.bot.main_color
-        )
-        
-        # Send the embed
-        await ctx.send(embed=embed)
 
 async def setup(bot):
     """
