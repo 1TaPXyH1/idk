@@ -83,23 +83,32 @@ class ClaimThread(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         
-        # Detailed MongoDB connection logging
+        # Comprehensive environment variable logging
         print("🔍 Initializing MongoDB Connection")
-        print(f"Environment Variables:")
-        print(f"  MONGODB_URI: {os.getenv('MONGODB_URI', 'Not Set')}")
-        print(f"  MONGODB_DATABASE: {os.getenv('MONGODB_DATABASE', 'Not Set')}")
+        print("Environment Variables:")
+        for key in ['MONGODB_URI', 'MONGODB_DATABASE', 'MONGO_URI', 'MONGO_DATABASE']:
+            print(f"  {key}: {os.getenv(key, 'Not Set')}")
         
-        # Prioritize connection strategies
-        self.mongo_uri = (
-            os.getenv('MONGODB_URI') or  # First, check for explicit URI
-            os.getenv('MONGO_URI') or    # Alternative env var
-            'mongodb+srv://111iotapxrb:fEJdHM55QIYPVBDb@tickets.eqqut.mongodb.net/?retryWrites=true&w=majority&appName=Tickets'  # Hardcoded fallback
+        # Prioritize connection strategies with more robust fallback
+        def get_env_with_fallback(primary_key, secondary_key, hardcoded_fallback):
+            value = (
+                os.getenv(primary_key) or 
+                os.getenv(secondary_key) or 
+                hardcoded_fallback
+            )
+            print(f"🌐 Selected {primary_key}: {value}")
+            return value
+        
+        self.mongo_uri = get_env_with_fallback(
+            'MONGODB_URI', 
+            'MONGO_URI', 
+            'mongodb+srv://111iotapxrb:fEJdHM55QIYPVBDb@tickets.eqqut.mongodb.net/?retryWrites=true&w=majority&appName=Tickets'
         )
         
-        self.mongo_db_name = (
-            os.getenv('MONGODB_DATABASE') or  # First, check for explicit database name
-            os.getenv('MONGO_DATABASE') or    # Alternative env var
-            'Tickets'  # Fallback database name
+        self.mongo_db_name = get_env_with_fallback(
+            'MONGODB_DATABASE', 
+            'MONGO_DATABASE', 
+            'Tickets'
         )
         
         # Validate MongoDB URI
@@ -114,7 +123,7 @@ class ClaimThread(commands.Cog):
             print(f"❌ URI Parsing Error: {uri_parse_error}")
         
         try:
-            # Create Motor client for direct MongoDB access with comprehensive connection settings
+            # Create Motor client for direct MongoDB access with robust connection settings
             self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(
                 self.mongo_uri, 
                 serverSelectionTimeoutMS=30000,  # 30-second server selection timeout
@@ -123,11 +132,7 @@ class ClaimThread(commands.Cog):
                 maxPoolSize=10,                  # Connection pool size
                 minPoolSize=1,                   # Minimum connections in pool
                 retryWrites=True,                # Retry write operations
-                appName='ModmailTicketPlugin',   # Descriptive app name
-                
-                # Additional diagnostic options
-                socketKeepAlive=True,            # Maintain connection
-                waitQueueTimeoutMS=30000         # Wait queue timeout
+                appName='ModmailTicketPlugin'    # Descriptive app name
             )
             
             # Select database
@@ -182,19 +187,21 @@ class ClaimThread(commands.Cog):
         except Exception as e:
             print(f"🚨 Unexpected MongoDB Connection Error: {e}")
             
-            # Fallback mechanism
-            if hasattr(bot, 'api'):
-                try:
-                    self.ticket_claims_collection = bot.api.get_shared_partition('ticket_claims')
-                    self.ticket_stats_collection = bot.api.get_shared_partition('ticket_stats')
-                    self.config_collection = bot.api.get_plugin_partition(self)
-                    print("✅ Fallback to bot's shared API successful")
-                except Exception as fallback_error:
-                    print(f"❌ Fallback to bot's shared API failed: {fallback_error}")
-                    # Optional: Create in-memory fallback collections
-                    self.ticket_claims_collection = {}
-                    self.ticket_stats_collection = {}
-                    self.config_collection = {}
+            # Fallback mechanism with more detailed error handling
+            try:
+                # Create in-memory fallback collections
+                self.ticket_claims_collection = {}
+                self.ticket_stats_collection = {}
+                self.config_collection = {}
+                
+                print("⚠️ Falling back to in-memory collections due to MongoDB connection failure")
+                
+                # Optional: Log the full traceback for debugging
+                import traceback
+                traceback.print_exc()
+            
+            except Exception as fallback_error:
+                print(f"❌ Even fallback mechanism failed: {fallback_error}")
             
         # Initialize necessary attributes
         self.check_message_cache = {}
