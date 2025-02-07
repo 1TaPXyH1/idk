@@ -80,6 +80,58 @@ async def check_reply(ctx):
 
 class ClaimThread(commands.Cog):
     """Allows supporters to claim thread by sending claim in the thread channel"""
+    async def initialize_mongodb(self):
+        try:
+            # Create Motor client for direct MongoDB access with robust connection settings
+            self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(
+                self.mongo_uri, 
+                serverSelectionTimeoutMS=30000,  # 30-second server selection timeout
+                connectTimeoutMS=30000,          # 30-second connection timeout
+                socketTimeoutMS=30000,           # 30-second socket timeout
+                maxPoolSize=10,                  # Connection pool size
+                minPoolSize=1,                   # Minimum connections in pool
+                retryWrites=True,                # Retry write operations
+                appName='ModmailTicketPlugin'    # Descriptive app name
+            )
+            
+            # Select database
+            self.mongo_db = self.mongo_client[self.mongo_db_name]
+            
+            # Create collections with validation
+            collection_names = await self.mongo_db.list_collection_names()
+            collections_to_create = {
+                'ticket_claims': {'count_key': 'ticket_claims', 'description': 'Ticket Claims'},
+                'ticket_stats': {'count_key': 'ticket_stats', 'description': 'Ticket Statistics'},
+                'plugin_configs': {'count_key': 'plugin_configs', 'description': 'Plugin Configurations'}
+            }
+                    
+            for collection_name, collection_info in collections_to_create.items():
+                if collection_name not in collection_names:
+                    try:
+                        await self.mongo_db.create_collection(collection_name)
+                        print(f"✅ Created {collection_info['description']} Collection: {collection_name}")
+                    except Exception as create_error:
+                        print(f"❌ Error creating {collection_info['description']} Collection: {create_error}")
+                else:
+                    print(f"ℹ️ {collection_info['description']} Collection already exists: {collection_name}")
+                        
+            print("✅ Verified Collections")
+            
+            # Initialize collections
+            self.ticket_claims_collection = self.mongo_db['ticket_claims']
+            self.ticket_stats_collection = self.mongo_db['ticket_stats']
+            self.config_collection = self.mongo_db['plugin_configs']
+            
+            return True
+        
+        except Exception as e:
+            print(f"🚨 MongoDB Initialization Error: {e}")
+            # Fallback to in-memory collections
+            self.ticket_claims_collection = {}
+            self.ticket_stats_collection = {}
+            self.config_collection = {}
+            return False
+
     def __init__(self, bot):
         self.bot = bot
         
@@ -142,89 +194,9 @@ class ClaimThread(commands.Cog):
             self.mongo_uri = f"mongodb+srv://{FALLBACK_MONGODB_USERNAME}:{FALLBACK_MONGODB_PASSWORD}@{FALLBACK_MONGODB_CLUSTER_URL}/?{FALLBACK_MONGODB_OPTIONS}"
             print(f"⚠️ Forced Fallback URI: {self.mongo_uri}")
         
-        try:
-            # Create Motor client for direct MongoDB access with robust connection settings
-            self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(
-                self.mongo_uri, 
-                serverSelectionTimeoutMS=30000,  # 30-second server selection timeout
-                connectTimeoutMS=30000,          # 30-second connection timeout
-                socketTimeoutMS=30000,           # 30-second socket timeout
-                maxPoolSize=10,                  # Connection pool size
-                minPoolSize=1,                   # Minimum connections in pool
-                retryWrites=True,                # Retry write operations
-                appName='ModmailTicketPlugin'    # Descriptive app name
-            )
-            
-            # Select database
-            self.mongo_db = self.mongo_client[self.mongo_db_name]
-            
-            # Create collections with validation
-            self.ticket_claims_collection = self.mongo_db['ticket_claims']
-            self.ticket_stats_collection = self.mongo_db['ticket_stats']
-            self.config_collection = self.mongo_db['plugin_configs']
-            
-            # Perform a comprehensive connection test
-            async def test_connection():
-                try:
-                    print("🔬 Starting Comprehensive MongoDB Connection Test")
-                    
-                    # Test basic connectivity with a less privileged command
-                    ping_result = await self.mongo_db.command('ping')
-                    print(f"✅ Basic Connectivity: {ping_result}")
-                    
-                    # Log basic connection details
-                    print(f"✅ MongoDB Connection Successful")
-                    print(f"   📂 Database: {self.mongo_db.name}")
-                    print(f"   🌐 URI: {self.mongo_uri}")
-                    
-                    # Optional: Log collection stats with error handling
-                    print("\n📋 Collection Statistics:")
-                    for collection_name in ['ticket_claims', 'ticket_stats', 'plugin_configs']:
-                        collection = self.mongo_db[collection_name]
-                        try:
-                            count = await collection.count_documents({})
-                            print(f"   📊 {collection_name}: {count} documents")
-                        except Exception as collection_error:
-                            print(f"   ❌ Error counting {collection_name}: {collection_error}")
-                
-                except Exception as e:
-                    print(f"❌ MongoDB Connection Test Failed: {e}")
-                    # Log full traceback for detailed debugging
-                    import traceback
-                    traceback.print_exc()
-                
-                # Always create collections if they don't exist
-                try:
-                    # Ensure collections exist
-                    await self.mongo_db.create_collection('ticket_claims', check_exists=True)
-                    await self.mongo_db.create_collection('ticket_stats', check_exists=True)
-                    await self.mongo_db.create_collection('plugin_configs', check_exists=True)
-                    print("✅ Verified/Created necessary collections")
-                except Exception as collection_creation_error:
-                    print(f"❌ Collection Creation Error: {collection_creation_error}")
-            
-            # Run connection test
-            self.bot.loop.create_task(test_connection())
+        # Schedule MongoDB initialization
+        self.bot.loop.create_task(self.initialize_mongodb())
         
-        except Exception as e:
-            print(f"🚨 Unexpected MongoDB Connection Error: {e}")
-            
-            # Fallback mechanism with more detailed error handling
-            try:
-                # Create in-memory fallback collections
-                self.ticket_claims_collection = {}
-                self.ticket_stats_collection = {}
-                self.config_collection = {}
-                
-                print("⚠️ Falling back to in-memory collections due to MongoDB connection failure")
-                
-                # Optional: Log the full traceback for debugging
-                import traceback
-                traceback.print_exc()
-            
-            except Exception as fallback_error:
-                print(f"❌ Even fallback mechanism failed: {fallback_error}")
-            
         # Initialize necessary attributes
         self.check_message_cache = {}
         self.default_config = {
