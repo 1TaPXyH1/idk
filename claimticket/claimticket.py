@@ -866,9 +866,4 @@ class ClaimThread(commands.Cog):
         
         :param bot: Discord bot instance
         """
-        try:
-            # Ensure the cog is added asynchronously
-            await bot.add_cog(ClaimThread(bot))
-        except Exception as e:
-            print(f"Error setting up ClaimThread plugin: {e}")
-            raise
+        await bot.add_cog(ClaimThread(bot))
