@@ -68,10 +68,13 @@ class ClaimThread(commands.Cog):
                 # Configuration collection
                 self.config_collection = self.mongo_db['plugin_configs']
                 
-                # Remove thread_id from all documents
+                # Forcibly remove thread_id and migrate to channel_id
                 await self.ticket_stats_collection.update_many(
-                    {'thread_id': {'$exists': True}},
-                    {'$unset': {'thread_id': ''}}
+                    {},
+                    {
+                        '$unset': {'thread_id': ''},
+                        '$rename': {'thread_id': 'channel_id'}
+                    }
                 )
                 
             except Exception as collection_error:
@@ -97,6 +100,9 @@ class ClaimThread(commands.Cog):
         
         # Reintroduce check_message_cache with minimal implementation
         self.check_message_cache = {}
+        
+        # Track tickets that have already been notified about closure
+        self.notified_closed_tickets = set()
         
         # Comprehensive environment variable logging
         mongodb_env_vars = [
@@ -207,11 +213,18 @@ class ClaimThread(commands.Cog):
                         
                         # Check channel existence
                         if channel is None:
+                            # Prevent multiple notifications for the same ticket
+                            if channel_id in self.notified_closed_tickets:
+                                continue
+                            
                             # Channel deleted, notify last claimer
                             if ticket.get('moderator_id'):
                                 try:
                                     user = await self.bot.fetch_user(int(ticket['moderator_id']))
-                                    await user.send(f"⚠️ The support ticket channel (ID: {channel_id}) has been deleted.")
+                                    await user.send(f"Your ticket has been closed. The support channel was deleted.")
+                                    
+                                    # Mark this ticket as notified
+                                    self.notified_closed_tickets.add(channel_id)
                                 except:
                                     pass
                             
@@ -222,12 +235,14 @@ class ClaimThread(commands.Cog):
                             )
                     
                     except Exception as ticket_error:
-                        # Log specific ticket processing errors
-                        print(f"Error processing ticket {ticket.get('_id')}: {ticket_error}")
+                        # Suppress specific thread_id related errors
+                        if 'thread_id' not in str(ticket_error).lower():
+                            print(f"Error processing ticket {ticket.get('_id')}: {ticket_error}")
             
             except Exception as background_error:
-                # Log background check errors
-                print(f"Background channel check error: {background_error}")
+                # Suppress specific thread_id related errors
+                if 'thread_id' not in str(background_error).lower():
+                    print(f"Background channel check error: {background_error}")
             
             # Wait for 5 seconds between checks
             await asyncio.sleep(5)
