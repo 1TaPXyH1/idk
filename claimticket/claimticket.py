@@ -882,27 +882,65 @@ class ClaimThread(commands.Cog):
             await ctx.send(f"Error exporting ticket stats: {e}")
             print(f"Export ticket stats error: {e}")
 
-    async def cog_load(self):
+    async def track_ticket_count(self, user_id: int, timestamp: datetime = None):
         """
-        Load saved configuration when the cog is loaded
+        Track ticket count for a specific user by day and month
+        
+        :param user_id: Discord user ID
+        :param timestamp: Timestamp of the ticket (defaults to current time)
         """
+        if timestamp is None:
+            timestamp = datetime.utcnow()
+        
+        # Prepare document for daily ticket count
+        daily_doc = {
+            'user_id': user_id,
+            'date': timestamp.date(),
+            'month': timestamp.strftime('%Y-%m'),
+            'ticket_count': 1
+        }
+        
         try:
-            # Try to load previously saved webhook URL
-            config_collection = self.config_collection
-            config = await config_collection.find_one({'_id': 'ticket_export_config'})
+            # Upsert daily ticket count
+            await self.ticket_stats_collection.update_one(
+                {
+                    'user_id': user_id, 
+                    'date': daily_doc['date']
+                },
+                {'$inc': {'ticket_count': 1}},
+                upsert=True
+            )
             
-            if config and 'webhook_url' in config:
-                self.ticket_export_webhook = config['webhook_url']
+            # Aggregate monthly ticket count
+            monthly_result = await self.ticket_stats_collection.aggregate([
+                {
+                    '$match': {
+                        'user_id': user_id,
+                        'month': daily_doc['month']
+                    }
+                },
+                {
+                    '$group': {
+                        '_id': '$month',
+                        'total_tickets': {'$sum': '$ticket_count'}
+                    }
+                }
+            ]).to_list(length=1)
+            
+            # Optional: You can store monthly aggregates in a separate collection if needed
+            if monthly_result:
+                await self.ticket_stats_collection.update_one(
+                    {
+                        'user_id': user_id,
+                        'month': daily_doc['month'],
+                        'is_monthly_aggregate': True
+                    },
+                    {'$set': monthly_result[0]},
+                    upsert=True
+                )
+        
         except Exception as e:
-            print(f"Error loading ticket export config: {e}")
-            raise
-
-    def cog_unload(self):
-        """
-        Close MongoDB connection when cog is unloaded
-        """
-        if hasattr(self, 'mongo_client'):
-            self.mongo_client.close()
+            print(f"Error tracking ticket count for user {user_id}: {e}")
 
     @commands.command(name="set_export_webhook")
     @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
@@ -1139,6 +1177,90 @@ class ClaimThread(commands.Cog):
             await ctx.send(f"Your claimed threads:\n{channel_list}")
         else:
             await ctx.send("You have no active claimed threads.")
+
+    async def get_ticket_stats_for_placeholder(self, user_id: int, stat_type: str = 'daily', time_period: int = 30):
+        """
+        Retrieve ticket statistics for placeholders
+
+        :param user_id: Discord user ID
+        :param stat_type: Type of statistic ('daily', 'monthly')
+        :param time_period: Number of days to look back
+        :return: Dictionary of ticket statistics
+        """
+        try:
+            now = datetime.utcnow()
+            time_threshold = now - timedelta(days=time_period)
+
+            if stat_type == 'daily':
+                # Daily ticket count for the specified time period
+                daily_stats = await self.ticket_stats_collection.find({
+                    'user_id': user_id,
+                    'date': {'$gte': time_threshold.date()},
+                    'is_monthly_aggregate': {'$ne': True}
+                }).to_list(length=None)
+
+                return {
+                    'total_daily_tickets': sum(stat.get('ticket_count', 0) for stat in daily_stats),
+                    'daily_ticket_details': daily_stats
+                }
+
+            elif stat_type == 'monthly':
+                # Monthly ticket count
+                monthly_stats = await self.ticket_stats_collection.find({
+                    'user_id': user_id,
+                    'is_monthly_aggregate': True,
+                    '_id': {'$gte': (now - timedelta(days=time_period)).strftime('%Y-%m')}
+                }).to_list(length=None)
+
+                return {
+                    'total_monthly_tickets': sum(stat.get('total_tickets', 0) for stat in monthly_stats),
+                    'monthly_ticket_details': monthly_stats
+                }
+
+        except Exception as e:
+            print(f"Error retrieving ticket stats for user {user_id}: {e}")
+            return {}
+
+    @commands.command(name="ticket_stats_details")
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    async def ticket_stats_details(self, ctx, member: discord.Member = None):
+        """
+        Show detailed ticket statistics for a user or yourself
+
+        :param ctx: Command context
+        :param member: Optional member to check stats for (defaults to command invoker)
+        """
+        member = member or ctx.author
+        
+        try:
+            # Get daily and monthly stats
+            daily_stats = await self.get_ticket_stats_for_placeholder(member.id, 'daily')
+            monthly_stats = await self.get_ticket_stats_for_placeholder(member.id, 'monthly')
+
+            # Create an embed to display stats
+            embed = discord.Embed(
+                title=f"📊 Ticket Statistics for {member.display_name}",
+                color=discord.Color.blue()
+            )
+
+            # Add daily ticket stats
+            embed.add_field(
+                name="Daily Ticket Count (Last 30 Days)",
+                value=f"Total Tickets: {daily_stats.get('total_daily_tickets', 0)}",
+                inline=False
+            )
+
+            # Add monthly ticket stats
+            embed.add_field(
+                name="Monthly Ticket Count",
+                value=f"Total Tickets: {monthly_stats.get('total_monthly_tickets', 0)}",
+                inline=False
+            )
+
+            await ctx.send(embed=embed)
+
+        except Exception as e:
+            await ctx.send(f"Error retrieving ticket statistics: {e}")
 
 async def setup(bot):
     """
