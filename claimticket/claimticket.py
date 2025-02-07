@@ -700,17 +700,26 @@ class ClaimThread(commands.Cog):
             closer: The user who closed the thread
         """
         try:
-            # Prepare minimal stats document
-            stats_doc = {
-                'thread_id': str(thread.id),
-                'guild_id': str(thread.guild.id),
-                'moderator_id': str(closer.id) if closer else 'unknown',
-                'closed_at': datetime.utcnow()
-            }
-            
-            # Insert stats document
-            await self.ticket_stats_collection.insert_one(stats_doc)
-            print(f"✅ Ticket stats updated for thread {thread.id}")
+            # Ensure thread is closed or no longer exists
+            if thread is None or thread.closed:
+                # Prepare minimal stats document with specified fields
+                stats_doc = {
+                    'thread_id': str(thread.id) if thread else 'unknown',
+                    'guild_id': str(thread.guild.id) if thread and thread.guild else 'unknown',
+                    'moderator_id': str(closer.id) if closer else 'unknown',
+                    'closed_at': datetime.utcnow(),
+                    'status': 'closed'
+                }
+                
+                # Insert stats document
+                result = await self.ticket_stats_collection.insert_one(stats_doc)
+                
+                if result.inserted_id:
+                    print(f"✅ Ticket stats logged for thread {'ID: ' + str(thread.id) if thread else 'Unknown'}")
+                else:
+                    print("❌ Failed to log ticket stats")
+            else:
+                print("ℹ️ Thread not closed, skipping stats logging")
         
         except Exception as e:
             print(f"❌ Error updating ticket stats: {e}")
