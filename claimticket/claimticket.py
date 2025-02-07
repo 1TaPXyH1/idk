@@ -167,15 +167,15 @@ class ClaimThread(commands.Cog):
         
         while not self.bot.is_closed():
             try:
-                # Find all active tickets, handling both channel_id and thread_id
+                # Find all active tickets, using only channel_id
                 active_tickets = await self.ticket_stats_collection.find({
                     'current_state': {'$ne': 'closed'}
                 }).to_list(length=None)
                 
                 for ticket in active_tickets:
                     try:
-                        # Safely get channel ID, prioritizing channel_id
-                        channel_id = ticket.get('channel_id') or ticket.get('thread_id')
+                        # Use only channel_id, remove thread_id fallback
+                        channel_id = ticket.get('channel_id')
                         if not channel_id:
                             continue
                         
@@ -529,12 +529,12 @@ class ClaimThread(commands.Cog):
             except Exception:
                 is_closed = False
             
-            thread_id = str(thread.id)
+            channel_id = str(thread.id)
             guild_id = str(thread.guild.id) if thread.guild else 'unknown'
             
             # Prepare stats document
             stats_doc = {
-                'channel_id': thread_id,
+                'channel_id': channel_id,
                 'guild_id': guild_id,
                 'created_at': thread.created_at,
                 'moderator_id': str(closer.id) if closer else None,
@@ -546,7 +546,7 @@ class ClaimThread(commands.Cog):
             try:
                 # Try to find existing document for this thread
                 existing_doc = await self.ticket_stats_collection.find_one({
-                    'channel_id': thread_id,
+                    'channel_id': channel_id,
                     'guild_id': guild_id
                 })
                 
