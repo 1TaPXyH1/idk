@@ -1262,15 +1262,15 @@ class ClaimThread(commands.Cog):
         except Exception as e:
             await ctx.send(f"Error retrieving ticket statistics: {e}")
 
-async def setup(bot):
-    """
-    Asynchronous setup function for the plugin
-    
-    :param bot: Discord bot instance
-    """
-    try:
-        # Ensure the cog is added asynchronously
-        await bot.add_cog(ClaimThread(bot))
-    except Exception as e:
-        print(f"Error setting up ClaimThread plugin: {e}")
-        raise
+    @commands.command(name='mongodb_debug')
+    @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
+    async def mongodb_debug(self, ctx):
+        """
+        Debug MongoDB connection and ticket statistics
+        """
+        try:
+            # Test MongoDB connection
+            await self.mongo_db.command('ping')
+
+            # Get ticket stats collection info
+            c
