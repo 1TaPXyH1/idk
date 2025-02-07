@@ -172,6 +172,58 @@ class ClaimThread(commands.Cog):
         # Start background ticket state verification
         self.bot.loop.create_task(self.background_ticket_state_check())
 
+        # Start background thread existence verification
+        self.bot.loop.create_task(self.background_thread_existence_check())
+
+    async def background_thread_existence_check(self):
+        """
+        Periodic background task to verify thread existence and update status
+        Runs every 5 seconds to check active tickets
+        """
+        await self.bot.wait_until_ready()
+        
+        while not self.bot.is_closed():
+            try:
+                # Find all non-closed tickets
+                active_tickets = await self.ticket_stats_collection.find({
+                    'current_state': {'$ne': 'closed'}
+                }).to_list(length=None)
+                
+                for ticket in active_tickets:
+                    try:
+                        thread_id = int(ticket['thread_id'])
+                        guild_id = int(ticket.get('guild_id', 0))
+                        
+                        # Find the guild
+                        guild = self.bot.get_guild(guild_id)
+                        if not guild:
+                            # If guild not found, mark as closed
+                            await self.on_thread_state_change(
+                                SimpleNamespace(id=thread_id, guild=None), 
+                                'closed'
+                            )
+                            continue
+                        
+                        # Try to fetch the thread
+                        thread = guild.get_thread(thread_id)
+                        
+                        # Check thread state
+                        if thread is None or thread.closed:
+                            # Dispatch closed state if thread is not found or closed
+                            await self.on_thread_state_change(
+                                thread or SimpleNamespace(id=thread_id, guild=guild), 
+                                'closed'
+                            )
+                    
+                    except Exception as ticket_error:
+                        print(f"⚠️ Error checking ticket {ticket.get('thread_id', 'unknown')}: {ticket_error}")
+            
+            except Exception as e:
+                print(f"❌ Background thread existence check failed: {e}")
+            
+            # Wait for 5 seconds before next check
+            await asyncio.sleep(5)
+
     async def background_ticket_state_check(self):
         """
         Periodic background task to verify and update ticket states
@@ -180,32 +232,48 @@ class ClaimThread(commands.Cog):
         
         while not self.bot.is_closed():
             try:
-                # Find all open tickets
+                # Find all tickets not marked as closed
                 open_tickets = await self.ticket_stats_collection.find({
-                    'current_state': {'$ne': 'closed'}
+                    '$or': [
+                        {'current_state': {'$ne': 'closed'}},
+                        {'is_closed': False}
+                    ]
                 }).to_list(length=None)
                 
                 for ticket in open_tickets:
                     try:
                         # Attempt to fetch the thread
-                        thread = self.bot.get_channel(int(ticket['thread_id']))
+                        thread_id = int(ticket['thread_id'])
+                        guild_id = int(ticket.get('guild_id', 0))
+                        
+                        # Find the guild and thread
+                        guild = self.bot.get_guild(guild_id)
+                        if not guild:
+                            # If guild not found, mark as closed
+                            await self.on_thread_state_change(
+                                SimpleNamespace(id=thread_id, guild=None), 
+                                'closed'
+                            )
+                            continue
+                        
+                        thread = guild.get_thread(thread_id)
                         
                         # Check thread state
-                        if thread is None or getattr(thread, 'closed', False):
+                        if thread is None or thread.closed:
                             # Dispatch closed state if thread is not found or closed
                             await self.on_thread_state_change(
-                                thread or SimpleNamespace(id=ticket['thread_id'], guild=self.bot.get_guild(int(ticket['guild_id']))), 
+                                thread or SimpleNamespace(id=thread_id, guild=guild), 
                                 'closed'
                             )
                     
                     except Exception as ticket_error:
-                        print(f"⚠️ Error checking ticket {ticket['thread_id']}: {ticket_error}")
+                        print(f"⚠️ Error checking ticket {ticket.get('thread_id', 'unknown')}: {ticket_error}")
             
             except Exception as e:
                 print(f"❌ Background ticket state check failed: {e}")
             
-            # Wait before next check (1 hour)
-            await asyncio.sleep(3600)
+            # Wait before next check (15 minutes)
+            await asyncio.sleep(900)  # 15 minutes instead of 1 hour
 
     async def get_config(self):
         """
@@ -695,7 +763,6 @@ class ClaimThread(commands.Cog):
         
         await ctx.send(f"Claim limit set to {limit} threads.")
 
-    @commands.Cog.listener()
     async def on_thread_state_change(self, thread, state, user=None):
         """
         Centralized event listener for ticket state changes
@@ -706,40 +773,102 @@ class ClaimThread(commands.Cog):
             user: User who triggered the state change (optional)
         """
         try:
-            # Prepare state document
+            # Determine if thread exists and is closed
+            is_closed = state == 'closed'
+            
+            # Check thread existence
+            try:
+                if thread and hasattr(thread, 'guild'):
+                    # Attempt to fetch the channel to verify existence
+                    await thread.guild.fetch_channel(thread.id)
+                else:
+                    is_closed = True
+            except discord.NotFound:
+                is_closed = True
+            except Exception as fetch_error:
+                print(f"⚠️ Error checking thread existence: {fetch_error}")
+                is_closed = True
+            
+            # Prepare minimal stats document
             stats_doc = {
-                'thread_id': str(thread.id),
-                'guild_id': str(thread.guild.id) if thread.guild else 'unknown',
+                'thread_id': str(thread.id) if thread else 'unknown',
+                'guild_id': str(thread.guild.id) if thread and thread.guild else 'unknown',
                 'current_state': state,
+                'status': 'closed' if is_closed else 'open',
+                'is_closed': is_closed,
                 'last_updated': datetime.utcnow(),
+                'closed_at': datetime.utcnow() if is_closed else None,
                 'last_user_id': str(user.id) if user else None,
-                'is_closed': state == 'closed'
+                'moderator_id': str(user.id) if user else None
             }
             
             # Upsert ticket stats
             result = await self.ticket_stats_collection.update_one(
-                {'thread_id': str(thread.id)},
+                {'thread_id': stats_doc['thread_id']},
                 {'$set': stats_doc},
                 upsert=True
             )
             
-            # Log the update
-            print(f"📋 Ticket State Updated: {thread.id} -> {state}")
+            # Minimal logging
+            print(f"📋 Ticket State: {stats_doc['thread_id']} -> {state}")
             
         except Exception as e:
             print(f"❌ Error tracking ticket state: {e}")
             import traceback
             traceback.print_exc()
 
-async def setup(bot):
-    """
-    Asynchronous setup function for the plugin
-    
-    :param bot: Discord bot instance
-    """
-    try:
-        # Ensure the cog is added asynchronously
-        await bot.add_cog(ClaimThread(bot))
-    except Exception as e:
-        print(f"Error setting up ClaimThread plugin: {e}")
-        raise
+    async def verify_thread_closure(self, thread_id, timeout=300):
+        """
+        Verify if a thread is actually closed
+        
+        :param thread_id: ID of the thread to check
+        :param timeout: Maximum time to wait for closure (in seconds)
+        :return: Boolean indicating if thread is closed
+        """
+        start_time = datetime.utcnow()
+        
+        while (datetime.utcnow() - start_time).total_seconds() < timeout:
+            try:
+                # Attempt to fetch the thread
+                thread = self.bot.get_channel(thread_id)
+                
+                # Check thread state
+                if thread is None:
+                    # Thread completely deleted
+                    return True
+                
+                if thread.closed:
+                    # Thread is archived/closed
+                    return True
+                
+                # Check if thread has no recent messages
+                try:
+                    recent_messages = await thread.history(limit=1).flatten()
+                    if not recent_messages:
+                        return True
+                except Exception:
+                    # If history fetch fails, it might indicate closure
+                    return True
+                
+                # Wait before next check
+                await asyncio.sleep(10)  # Check every 10 seconds
+            
+            except Exception as e:
+                print(f"❌ Closure verification error: {e}")
+                return False
+        
+        # Timeout reached without confirmation
+        return False
+
+    async def setup(self, bot):
+        """
+        Asynchronous setup function for the plugin
+        
+        :param bot: Discord bot instance
+        """
+        try:
+            # Ensure the cog is added asynchronously
+            await bot.add_cog(ClaimThread(bot))
+        except Exception as e:
+            print(f"Error setting up ClaimThread plugin: {e}")
+            raise
