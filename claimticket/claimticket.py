@@ -16,6 +16,7 @@ import aiohttp
 import motor.motor_asyncio
 from pymongo import UpdateOne
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
+from types import SimpleNamespace
 
 try:
     PANDAS_AVAILABLE = True
@@ -53,51 +54,43 @@ class ClaimThread(commands.Cog):
         Initialize MongoDB connection and collections
         """
         try:
-            # Create Motor client for direct MongoDB access with robust connection settings
-            self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(
-                self.mongo_uri, 
-                serverSelectionTimeoutMS=30000,  # 30-second server selection timeout
-                connectTimeoutMS=30000,          # 30-second connection timeout
-                socketTimeoutMS=30000,           # 30-second socket timeout
-                maxPoolSize=10,                  # Connection pool size
-                minPoolSize=1,                   # Minimum connections in pool
-                retryWrites=True,                # Retry write operations
-                appName='ModmailTicketPlugin'    # Descriptive app name
-            )
+            # Establish MongoDB connection
+            self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(self.mongo_uri)
             
             # Select database
             self.mongo_db = self.mongo_client[self.mongo_db_name]
             
-            # Initialize specific collections
-            self.ticket_stats_collection = self.mongo_db['ticket_stats']
-            self.config_collection = self.mongo_db['plugin_configs']
+            # Initialize collections with error suppression
+            try:
+                # Ticket stats collection
+                self.ticket_stats_collection = self.mongo_db['ticket_stats']
+                
+                # Configuration collection
+                self.config_collection = self.mongo_db['plugin_configs']
+                
+                print("✅ Verified Collections")
+            except Exception as collection_error:
+                print(f"❌ Collection Initialization Error: {collection_error}")
+                # Ensure collections exist even if initialization fails
+                self.ticket_stats_collection = self.mongo_db['ticket_stats']
+                self.config_collection = self.mongo_db['plugin_configs']
             
-            # Create collections with validation
-            collection_names = await self.mongo_db.list_collection_names()
-            collections_to_create = {
-                'ticket_stats': {'description': 'Ticket Closure Statistics'},
-                'plugin_configs': {'description': 'Plugin Configurations'}
-            }
-                    
-            for collection_name, collection_info in collections_to_create.items():
-                if collection_name not in collection_names:
-                    try:
-                        await self.mongo_db.create_collection(collection_name)
-                        print(f"✅ Created {collection_info['description']} Collection: {collection_name}")
-                    except Exception as create_error:
-                        print(f"❌ Error creating {collection_info['description']} Collection: {create_error}")
-                else:
-                    print(f"ℹ️ {collection_info['description']} Collection already exists: {collection_name}")
-                        
-            print("✅ Verified Collections")
-            return True
+            # Verify plugin configuration collection
+            config_exists = await self.config_collection.find_one({'_id': 'claim_config'})
+            if not config_exists:
+                await self.config_collection.insert_one({
+                    '_id': 'claim_config',
+                    'claim_limit': 5,
+                    'override_roles': []
+                })
+                print("ℹ️ Created initial plugin configuration")
+            else:
+                print("ℹ️ Plugin Configurations Collection already exists: plugin_configs")
         
         except Exception as e:
-            print(f"🚨 MongoDB Initialization Error: {e}")
-            # Fallback to in-memory collections
-            self.ticket_stats_collection = {}
-            self.config_collection = {}
-            return False
+            print(f"❌ MongoDB Initialization Error: {e}")
+            import traceback
+            traceback.print_exc()
 
     def __init__(self, bot):
         self.bot = bot
@@ -176,22 +169,43 @@ class ClaimThread(commands.Cog):
         # Ticket export webhook (optional)
         self.ticket_export_webhook = None
 
-    async def clean_old_claims(self):
-        """Clean up claims for non-existent channels"""
-        cursor = self.ticket_claims_collection.find({'guild_id': str(self.bot.modmail_guild.id)})
-        async for doc in cursor:
-            if 'thread_id' in doc:
-                channel = self.bot.get_channel(int(doc['thread_id']))  # Use cache first
-                if not channel and ('status' not in doc or doc['status'] != 'closed'):
-                    await self.ticket_claims_collection.find_one_and_update(
-                        {'thread_id': doc['thread_id'], 'guild_id': doc['guild_id']},
-                        {'$set': {'status': 'closed'}}
-                    )
+        # Start background ticket state verification
+        self.bot.loop.create_task(self.background_ticket_state_check())
 
-    @commands.Cog.listener()
-    async def on_ready(self):
-        """Clean up old claims when bot starts"""
-        await self.clean_old_claims()
+    async def background_ticket_state_check(self):
+        """
+        Periodic background task to verify and update ticket states
+        """
+        await self.bot.wait_until_ready()
+        
+        while not self.bot.is_closed():
+            try:
+                # Find all open tickets
+                open_tickets = await self.ticket_stats_collection.find({
+                    'current_state': {'$ne': 'closed'}
+                }).to_list(length=None)
+                
+                for ticket in open_tickets:
+                    try:
+                        # Attempt to fetch the thread
+                        thread = self.bot.get_channel(int(ticket['thread_id']))
+                        
+                        # Check thread state
+                        if thread is None or getattr(thread, 'closed', False):
+                            # Dispatch closed state if thread is not found or closed
+                            await self.on_thread_state_change(
+                                thread or SimpleNamespace(id=ticket['thread_id'], guild=self.bot.get_guild(int(ticket['guild_id']))), 
+                                'closed'
+                            )
+                    
+                    except Exception as ticket_error:
+                        print(f"⚠️ Error checking ticket {ticket['thread_id']}: {ticket_error}")
+            
+            except Exception as e:
+                print(f"❌ Background ticket state check failed: {e}")
+            
+            # Wait before next check (1 hour)
+            await asyncio.sleep(3600)
 
     async def get_config(self):
         """
@@ -285,37 +299,23 @@ class ClaimThread(commands.Cog):
         if days:
             cutoff_date = datetime.utcnow() - timedelta(days=days)
         
-        async for doc in self.ticket_claims_collection.find(
+        async for doc in self.ticket_stats_collection.find(
             {
                 'guild_id': str(self.bot.modmail_guild.id),
-                'claimers': {'$exists': True}
+                'last_user_id': {'$exists': True}
             }
         ):
             # Skip if before cutoff date
-            if cutoff_date and 'claimed_at' in doc:
-                claimed_at = datetime.fromisoformat(doc['claimed_at'])
-                if claimed_at < cutoff_date:
+            if cutoff_date and 'created_at' in doc:
+                created_at = datetime.fromisoformat(doc['created_at'])
+                if created_at < cutoff_date:
                     continue
                     
-            for claimer in doc['claimers']:
-                total_claims[claimer] = total_claims.get(claimer, 0) + 1
-                # Check if claim is active
-                try:
-                    channel = self.bot.get_channel(int(doc['thread_id']))
-                    if channel and ('status' not in doc or doc['status'] != 'closed'):
-                        claims[claimer] = claims.get(claimer, 0) + 1
-                    elif not channel and ('status' not in doc or doc['status'] != 'closed'):
-                        # Update status if channel doesn't exist
-                        await self.ticket_claims_collection.find_one_and_update(
-                            {'thread_id': doc['thread_id'], 'guild_id': doc['guild_id']},
-                            {'$set': {'status': 'closed'}}
-                        )
-                except:
-                    if 'status' not in doc or doc['status'] != 'closed':
-                        await self.ticket_claims_collection.find_one_and_update(
-                            {'thread_id': doc['thread_id'], 'guild_id': doc['guild_id']},
-                            {'$set': {'status': 'closed'}}
-                        )
+            last_user_id = doc['last_user_id']
+            total_claims[last_user_id] = total_claims.get(last_user_id, 0) + 1
+            # Check if claim is active
+            if doc['current_state'] != 'closed':
+                claims[last_user_id] = claims.get(last_user_id, 0) + 1
 
         if not total_claims:
             embed = discord.Embed(
@@ -351,40 +351,20 @@ class ClaimThread(commands.Cog):
     @commands.command()
     async def thread_claim(self, ctx):
         """Claim a thread without renaming"""
-        thread = await self.ticket_claims_collection.find_one({'thread_id': str(ctx.thread.channel.id), 'guild_id': str(self.bot.modmail_guild.id)})
-        has_active_claimers = thread and thread.get('claimers') and len(thread['claimers']) > 0
-        
-        if not has_active_claimers:
-            try:
-                # Only handle subscription
-                if str(ctx.thread.id) not in self.bot.config["subscriptions"]:
-                    self.bot.config["subscriptions"][str(ctx.thread.id)] = []
-                if ctx.author.mention not in self.bot.config["subscriptions"][str(ctx.thread.id)]:
-                    self.bot.config["subscriptions"][str(ctx.thread.id)].append(ctx.author.mention)
-                    await self.bot.config.update()
+        try:
+            # Only handle subscription
+            if str(ctx.thread.id) not in self.bot.config["subscriptions"]:
+                self.bot.config["subscriptions"][str(ctx.thread.id)] = []
+            if ctx.author.mention not in self.bot.config["subscriptions"][str(ctx.thread.id)]:
+                self.bot.config["subscriptions"][str(ctx.thread.id)].append(ctx.author.mention)
+                await self.bot.config.update()
 
-                # Update database without renaming
-                if thread is None:
-                    await self.ticket_claims_collection.insert_one({
-                        'guild_id': str(self.bot.modmail_guild.id),
-                        'thread_id': str(ctx.thread.channel.id),
-                        'claimers': [str(ctx.author.id)],
-                        'status': 'open'
-                    })
-                else:
-                    await self.ticket_claims_collection.find_one_and_update(
-                        {'thread_id': str(ctx.thread.channel.id), 'guild_id': str(self.bot.modmail_guild.id)},
-                        {'$set': {'claimers': [str(ctx.author.id)], 'status': 'open'}}
-                    )
-
-                embed = discord.Embed(
-                    color=self.bot.main_color,
-                    description=f"Successfully claimed the thread.\n{ctx.author.mention} is now subscribed to this thread."
-                )
-                await ctx.send(embed=embed)
-            except:
-                await ctx.message.add_reaction('❌')
-        else:
+            embed = discord.Embed(
+                color=self.bot.main_color,
+                description=f"Successfully claimed the thread.\n{ctx.author.mention} is now subscribed to this thread."
+            )
+            await ctx.send(embed=embed)
+        except:
             await ctx.message.add_reaction('❌')
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
@@ -392,27 +372,18 @@ class ClaimThread(commands.Cog):
     @commands.command()
     async def thread_unclaim(self, ctx):
         """Unclaim a thread without renaming"""
-        thread = await self.ticket_claims_collection.find_one({'thread_id': str(ctx.thread.channel.id), 'guild_id': str(self.bot.modmail_guild.id)})
-        if thread and str(ctx.author.id) in thread['claimers']:
-            try:
-                await self.ticket_claims_collection.find_one_and_update(
-                    {'thread_id': str(ctx.thread.channel.id), 'guild_id': str(self.bot.modmail_guild.id)}, 
-                    {'$pull': {'claimers': str(ctx.author.id)}}
-                )
-                
-                # Only handle unsubscription
-                if ctx.author.mention in self.bot.config["subscriptions"].get(str(ctx.thread.id), []):
-                    self.bot.config["subscriptions"][str(ctx.thread.id)].remove(ctx.author.mention)
-                    await self.bot.config.update()
-                
-                embed = discord.Embed(
-                    color=self.bot.main_color,
-                    description=f"Removed from claimers.\n{ctx.author.mention} is now unsubscribed from this thread."
-                )
-                await ctx.send(embed=embed)
-            except:
-                await ctx.message.add_reaction('❌')
-        else:
+        try:
+            # Only handle unsubscription
+            if ctx.author.mention in self.bot.config["subscriptions"].get(str(ctx.thread.id), []):
+                self.bot.config["subscriptions"][str(ctx.thread.id)].remove(ctx.author.mention)
+                await self.bot.config.update()
+            
+            embed = discord.Embed(
+                color=self.bot.main_color,
+                description=f"Removed from claimers.\n{ctx.author.mention} is now unsubscribed from this thread."
+            )
+            await ctx.send(embed=embed)
+        except:
             await ctx.message.add_reaction('❌')
 
     @checks.has_permissions(PermissionLevel.SUPPORTER)
@@ -624,6 +595,9 @@ class ClaimThread(commands.Cog):
 
         # Log ticket stats when claimed
         await self.update_ticket_stats(thread, ctx.author)
+        
+        # Dispatch state change event
+        await self.on_thread_state_change(thread, 'claimed', ctx.author)
 
         await ctx.send(f"✅ {ctx.author.mention} has acknowledged this ticket.")
 
@@ -641,6 +615,9 @@ class ClaimThread(commands.Cog):
 
         # Log ticket stats when unclaimed
         await self.update_ticket_stats(thread, None if is_thread_closed else ctx.author)
+        
+        # Dispatch state change event
+        await self.on_thread_state_change(thread, 'unclaimed', ctx.author)
 
         await ctx.send(f"✅ Ticket status reset.")
 
@@ -652,40 +629,13 @@ class ClaimThread(commands.Cog):
         Prevents other supporters from replying
         """
         try:
-            # Check if thread is already claimed
-            existing_claim = await self.ticket_claims_collection.find_one({
-                'thread_id': str(ctx.thread.channel.id),
-                'guild_id': str(ctx.guild.id)
-            })
-
-            if existing_claim:
-                # Check if current user is already a claimer
-                if str(ctx.author.id) in existing_claim.get('claimers', []):
-                    await ctx.send("You have already claimed this thread.")
-                    return
-                
-                # Check claim limits
-                config = await self.get_config()
-                user_claims = await self.count_active_claims(ctx.author.id)
-                
-                if user_claims >= config.get('claim_limit', 5):
-                    await ctx.send(f"You have reached the maximum claim limit of {config['claim_limit']} threads.")
-                    return
-                
-                # Add current user to claimers
-                await self.ticket_claims_collection.find_one_and_update(
-                    {'thread_id': str(ctx.thread.channel.id), 'guild_id': str(ctx.guild.id)},
-                    {'$addToSet': {'claimers': str(ctx.author.id)}}
-                )
-            else:
-                # Create new claim
-                await self.ticket_claims_collection.insert_one({
-                    'thread_id': str(ctx.thread.channel.id),
-                    'guild_id': str(ctx.guild.id),
-                    'claimers': [str(ctx.author.id)],
-                    'claimed_at': datetime.utcnow(),
-                    'status': 'active'
-                })
+            # Check claim limits
+            config = await self.get_config()
+            user_claims = await self.count_active_claims(ctx.author.id)
+            
+            if user_claims >= config.get('claim_limit', 5):
+                await ctx.send(f"You have reached the maximum claim limit of {config['claim_limit']} threads.")
+                return
             
             await ctx.send(f"Thread claimed by {ctx.author.mention}")
         
@@ -700,11 +650,16 @@ class ClaimThread(commands.Cog):
         :param user_id: ID of the user
         :return: Number of active claims
         """
-        active_claims = await self.ticket_claims_collection.count_documents({
-            'claimers': str(user_id),
-            'status': 'active'
-        })
-        return active_claims
+        try:
+            # Count active claims using ticket stats collection
+            active_claims = await self.ticket_stats_collection.count_documents({
+                'last_user_id': str(user_id),
+                'current_state': {'$ne': 'closed'}
+            })
+            return active_claims
+        except Exception as e:
+            print(f"❌ Error counting active claims: {e}")
+            return 0
 
     @commands.command(name="thread_unclaim")
     @checks.has_permissions(PermissionLevel.SUPPORTER)
@@ -714,22 +669,7 @@ class ClaimThread(commands.Cog):
         Allows other supporters to claim and reply
         """
         try:
-            result = await self.ticket_claims_collection.find_one_and_update(
-                {
-                    'thread_id': str(ctx.thread.channel.id),
-                    'guild_id': str(ctx.guild.id),
-                    'claimers': str(ctx.author.id)
-                },
-                {
-                    '$pull': {'claimers': str(ctx.author.id)},
-                    '$set': {'status': 'unclaimed' if len(self.claimers) == 0 else 'active'}
-                }
-            )
-            
-            if result:
-                await ctx.send(f"Thread unclaimed by {ctx.author.mention}")
-            else:
-                await ctx.send("You haven't claimed this thread.")
+            await ctx.send(f"Thread unclaimed by {ctx.author.mention}")
         
         except Exception as e:
             await ctx.send(f"Error unclaiming thread: {e}")
@@ -755,7 +695,41 @@ class ClaimThread(commands.Cog):
         
         await ctx.send(f"Claim limit set to {limit} threads.")
 
-    # Removed thread_claims method
+    @commands.Cog.listener()
+    async def on_thread_state_change(self, thread, state, user=None):
+        """
+        Centralized event listener for ticket state changes
+        
+        Args:
+            thread: The Discord thread
+            state: New state of the ticket ('claimed', 'unclaimed', 'closed')
+            user: User who triggered the state change (optional)
+        """
+        try:
+            # Prepare state document
+            stats_doc = {
+                'thread_id': str(thread.id),
+                'guild_id': str(thread.guild.id) if thread.guild else 'unknown',
+                'current_state': state,
+                'last_updated': datetime.utcnow(),
+                'last_user_id': str(user.id) if user else None,
+                'is_closed': state == 'closed'
+            }
+            
+            # Upsert ticket stats
+            result = await self.ticket_stats_collection.update_one(
+                {'thread_id': str(thread.id)},
+                {'$set': stats_doc},
+                upsert=True
+            )
+            
+            # Log the update
+            print(f"📋 Ticket State Updated: {thread.id} -> {state}")
+            
+        except Exception as e:
+            print(f"❌ Error tracking ticket state: {e}")
+            import traceback
+            traceback.print_exc()
 
 async def setup(bot):
     """
