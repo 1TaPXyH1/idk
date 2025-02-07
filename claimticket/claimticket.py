@@ -1235,4 +1235,45 @@ class ClaimThread(commands.Cog):
             await self.mongo_db.command('ping')
 
             # Get ticket stats collection info
-            c
+            collection_stats = await self.ticket_stats_collection.find_one()
+            total_documents = await self.ticket_stats_collection.count_documents({})
+
+            # Create debug embed
+            embed = discord.Embed(
+                title="🔍 MongoDB Debug Information",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="Connection Status", value="✅ Successfully Connected", inline=False)
+            embed.add_field(name="Database", value=self.mongo_db.name, inline=False)
+            embed.add_field(name="Total Ticket Stat Documents", value=str(total_documents), inline=False)
+            
+            # Sample document if exists
+            if collection_stats:
+                sample_doc = "\n".join([f"{k}: {v}" for k, v in collection_stats.items()])
+                embed.add_field(name="Sample Document", value=f"```\n{sample_doc}\n```", inline=False)
+
+            await ctx.send(embed=embed)
+
+        except Exception as e:
+            # Create error embed
+            embed = discord.Embed(
+                title="❌ MongoDB Connection Error",
+                description=str(e),
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+            # Re-raise the exception to ensure it's logged
+            raise
+
+async def setup(bot):
+    """
+    Asynchronous setup function for the plugin
+    
+    :param bot: Discord bot instance
+    """
+    try:
+        # Ensure the cog is added asynchronously
+        await bot.add_cog(ClaimThread(bot))
+    except Exception as e:
+        print(f"Error setting up ClaimThread plugin: {e}")
+        raise
