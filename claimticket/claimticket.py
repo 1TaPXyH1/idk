@@ -49,20 +49,48 @@ async def is_in_thread(ctx):
 
 class ClaimThread(commands.Cog):
     """Allows supporters to claim thread by sending claim in the thread channel"""
+    def __init__(self, bot):
+        self.bot = bot
+        
+        # MongoDB connection details
+        self.mongo_uri = os.getenv('MONGODB_URI', '')
+        self.mongo_db_name = os.getenv('MONGODB_DATABASE', 'modmail')
+        
+        # Initialize MongoDB client and database
+        self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(self.mongo_uri)
+        self.mongo_db = self.mongo_client[self.mongo_db_name]
+        
+        # Initialize collections
+        self.ticket_stats_collection = self.mongo_db['ticket_stats']
+        self.config_collection = self.mongo_db['plugin_configs']
+        
+        # Ticket-related attributes
+        self.active_tickets = {}
+        self.check_message_cache = {}
+        
+        # Start background tasks
+        self.bot.loop.create_task(self.initialize_mongodb())
+
     async def initialize_mongodb(self):
         """
-        Initialize MongoDB connection and collections
+        Initialize and verify MongoDB collections
         """
         try:
-            # Initialize ticket stats collection with migration
-            self.ticket_stats_collection = self.mongo_db['ticket_stats']
+            # Verify plugin configuration collection
+            config_exists = await self.config_collection.find_one({'_id': 'claim_config'})
+            if not config_exists:
+                await self.config_collection.insert_one({
+                    '_id': 'claim_config',
+                    'claim_limit': 5,
+                    'override_roles': []
+                })
             
             # Perform data migration to ensure consistent schema
             await self.migrate_ticket_stats_collection()
         
         except Exception:
-            # Fallback collection initialization
-            self.ticket_stats_collection = self.mongo_db['ticket_stats']
+            # Silently handle initialization errors
+            pass
 
     async def migrate_ticket_stats_collection(self):
         """
@@ -95,78 +123,6 @@ class ClaimThread(commands.Cog):
         except Exception:
             # Silently handle migration errors
             pass
-
-    def __init__(self, bot):
-        self.bot = bot
-        
-        # Reintroduce check_message_cache with minimal implementation
-        self.check_message_cache = {}
-        
-        # Comprehensive environment variable logging
-        mongodb_env_vars = [
-            'MONGODB_URI', 'MONGODB_DATABASE', 'MONGODB_USERNAME', 
-            'MONGODB_PASSWORD', 'MONGODB_CLUSTER_URL', 'MONGODB_OPTIONS'
-        ]
-        for key in mongodb_env_vars:
-            print(f"  {key}: {os.getenv(key, 'Not Set')}")
-        
-        # Hardcoded fallback values
-        FALLBACK_MONGODB_USERNAME = '111iotapxrb'
-        FALLBACK_MONGODB_PASSWORD = 'fEJdHM55QIYPVBDb'
-        FALLBACK_MONGODB_CLUSTER_URL = 'tickets.eqqut.mongodb.net'
-        FALLBACK_MONGODB_OPTIONS = 'retryWrites=true&w=majority&appName=Tickets'
-        FALLBACK_MONGODB_DATABASE = 'Tickets'
-        
-        # Prioritize connection strategies with more robust fallback
-        def get_env_with_fallback(primary_key, fallback_value):
-            value = os.getenv(primary_key, fallback_value)
-            print(f"🌐 Selected {primary_key}: {value}")
-            return value
-        
-        # Construct MongoDB URI dynamically
-        mongodb_username = get_env_with_fallback('MONGODB_USERNAME', FALLBACK_MONGODB_USERNAME)
-        mongodb_password = get_env_with_fallback('MONGODB_PASSWORD', FALLBACK_MONGODB_PASSWORD)
-        mongodb_cluster_url = get_env_with_fallback('MONGODB_CLUSTER_URL', FALLBACK_MONGODB_CLUSTER_URL)
-        mongodb_options = get_env_with_fallback('MONGODB_OPTIONS', FALLBACK_MONGODB_OPTIONS)
-        
-        # Fallback to direct URI if not constructed from components
-        self.mongo_uri = (
-            get_env_with_fallback('MONGODB_URI', 
-                f"mongodb+srv://{mongodb_username}:{mongodb_password}@{mongodb_cluster_url}/?{mongodb_options}"
-            )
-        )
-        
-        self.mongo_db_name = get_env_with_fallback(
-            'MONGODB_DATABASE', 
-            FALLBACK_MONGODB_DATABASE
-        )
-        
-        # Validate MongoDB URI
-        try:
-            from urllib.parse import urlparse
-            parsed_uri = urlparse(self.mongo_uri)
-            
-            # Additional validation
-            if not parsed_uri.hostname:
-                raise ValueError("Invalid MongoDB hostname")
-        except Exception as uri_parse_error:
-            # Force fallback URI if parsing fails
-            self.mongo_uri = f"mongodb+srv://{FALLBACK_MONGODB_USERNAME}:{FALLBACK_MONGODB_PASSWORD}@{FALLBACK_MONGODB_CLUSTER_URL}/?{FALLBACK_MONGODB_OPTIONS}"
-        
-        # Schedule MongoDB initialization
-        self.bot.loop.create_task(self.initialize_mongodb())
-        
-        # Initialize necessary attributes
-        self.default_config = {
-            'claim_limit': 5,  # Default claim limit
-            'override_roles': []  # Default override roles
-        }
-        
-        # Ticket export webhook (optional)
-        self.ticket_export_webhook = None
-
-        # Start background channel verification
-        self.bot.loop.create_task(self.background_channel_check())
 
     async def background_channel_check(self):
         """
@@ -235,8 +191,8 @@ class ClaimThread(commands.Cog):
         """
         config = await self.config_collection.find_one({'_id': 'claim_config'}) or {}
         return {
-            'claim_limit': config.get('claim_limit', self.default_config['claim_limit']),
-            'override_roles': config.get('override_roles', self.default_config['override_roles'])
+            'claim_limit': config.get('claim_limit', 5),
+            'override_roles': config.get('override_roles', [])
         }
 
     async def handle_rate_limit(self, ctx):
