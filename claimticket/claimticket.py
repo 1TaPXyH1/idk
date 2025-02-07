@@ -68,6 +68,12 @@ class ClaimThread(commands.Cog):
                 # Configuration collection
                 self.config_collection = self.mongo_db['plugin_configs']
                 
+                # Remove thread_id from all documents
+                await self.ticket_stats_collection.update_many(
+                    {'thread_id': {'$exists': True}},
+                    {'$unset': {'thread_id': ''}}
+                )
+                
             except Exception as collection_error:
                 # Ensure collections exist even if initialization fails
                 self.ticket_stats_collection = self.mongo_db['ticket_stats']
@@ -174,12 +180,21 @@ class ClaimThread(commands.Cog):
                 
                 for ticket in active_tickets:
                     try:
-                        # Use only channel_id, remove thread_id fallback
-                        channel_id = ticket.get('channel_id')
-                        if not channel_id:
+                        # Ensure channel_id exists and is valid
+                        if 'channel_id' not in ticket or not ticket['channel_id']:
+                            # Remove invalid ticket document
+                            await self.ticket_stats_collection.delete_one({'_id': ticket['_id']})
                             continue
                         
-                        channel_id = int(channel_id)
+                        # Safely convert channel_id to integer
+                        try:
+                            channel_id = int(ticket['channel_id'])
+                        except (ValueError, TypeError):
+                            # Remove invalid ticket document
+                            await self.ticket_stats_collection.delete_one({'_id': ticket['_id']})
+                            continue
+                        
+                        # Safely get guild_id
                         guild_id = int(ticket.get('guild_id', 0))
                         
                         # Find the guild
@@ -206,13 +221,13 @@ class ClaimThread(commands.Cog):
                                 'closed'
                             )
                     
-                    except Exception:
-                        # Silently handle any ticket processing errors
-                        pass
+                    except Exception as ticket_error:
+                        # Log specific ticket processing errors
+                        print(f"Error processing ticket {ticket.get('_id')}: {ticket_error}")
             
-            except Exception:
-                # Silently handle any background check errors
-                pass
+            except Exception as background_error:
+                # Log background check errors
+                print(f"Background channel check error: {background_error}")
             
             # Wait for 5 seconds between checks
             await asyncio.sleep(5)
@@ -581,7 +596,11 @@ class ClaimThread(commands.Cog):
         await self.update_ticket_stats(thread, ctx.author)
         
         # Dispatch state change event
-        await self.on_thread_state_change(thread, 'claimed', ctx.author)
+        await self.on_thread_state_change(
+            thread, 
+            'claimed', 
+            ctx.author
+        )
 
         await ctx.send(f"✅ {ctx.author.mention} has acknowledged this ticket.")
 
@@ -601,7 +620,11 @@ class ClaimThread(commands.Cog):
         await self.update_ticket_stats(thread, None if is_thread_closed else ctx.author)
         
         # Dispatch state change event
-        await self.on_thread_state_change(thread, 'unclaimed', ctx.author)
+        await self.on_thread_state_change(
+            thread, 
+            'unclaimed', 
+            ctx.author
+        )
 
         await ctx.send(f"✅ Ticket status reset.")
 
