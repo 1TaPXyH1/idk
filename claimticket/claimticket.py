@@ -41,7 +41,11 @@ async def check_reply(ctx):
         return True
 
     try:
+        # Use the plugin's ticket claims collection for checking
         cog = ctx.bot.get_cog('ClaimThread')
+        if not cog:
+            return True
+
         channel_id = str(ctx.channel.id)
         
         # Check message cache to prevent spam
@@ -49,51 +53,26 @@ async def check_reply(ctx):
         if channel_id in cog.check_message_cache:
             last_time = cog.check_message_cache[channel_id]
             if current_time - last_time < 5:  # 5 second cooldown
-                try:
-                    await ctx.message.add_reaction('❌')
-                except:
-                    pass
                 return False
-                
-        thread = await cog.ticket_claims_collection.find_one({
-            'thread_id': str(ctx.thread.channel.id), 
-            'guild_id': str(ctx.bot.modmail_guild.id)
-        })
         
-        # If thread isn't claimed or doesn't exist, allow reply
-        if not thread or not thread.get('claimers'):
-            return True
-            
-        # Check for override permissions
-        has_override = False
-        if config := await cog.get_config():
-            override_roles = config.get('override_roles', [])
-            member_roles = [role.id for role in ctx.author.roles]
-            has_override = any(role_id in member_roles for role_id in override_roles)
+        # Check thread claims
+        claim_filter = {
+            'thread_id': channel_id,
+            'status': 'active'
+        }
+        existing_claim = await cog.ticket_claims_collection.find_one(claim_filter)
         
-        # Allow if user is bot, has override, or is claimer
-        can_reply = (
-            ctx.author.bot or 
-            has_override or 
-            str(ctx.author.id) in thread['claimers']
-        )
+        if existing_claim:
+            # Check if the user is a claimer
+            claimers = existing_claim.get('claimers', [])
+            if str(ctx.author.id) not in claimers:
+                await ctx.send("This thread is claimed. Only claimed users can reply.")
+                return False
         
-        if not can_reply:
-            # Update cache, send ephemeral message and add X reaction
-            cog.check_message_cache[channel_id] = current_time
-            try:
-                embed = discord.Embed(
-                    description="This thread has been claimed by another user.",
-                    color=discord.Color.red()
-                )
-                await ctx.send(embed=embed, ephemeral=True)
-                await ctx.message.add_reaction('❌')
-            except:
-                pass
-            return False
-            
+        # Update message cache
+        cog.check_message_cache[channel_id] = current_time
         return True
-        
+
     except Exception as e:
         print(f"Error in check_reply: {e}")
         return True
@@ -104,9 +83,9 @@ class ClaimThread(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         
-        # Direct MongoDB connection string
-        self.mongo_uri = 'mongodb+srv://111iotapxrb:fEJdHM55QIYPVBDb@tickets.eqqut.mongodb.net/?retryWrites=true&w=majority&appName=Tickets'
-        self.mongo_db_name = 'Tickets'
+        # Use environment variables for MongoDB configuration
+        self.mongo_uri = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/')
+        self.mongo_db_name = os.getenv('MONGODB_DATABASE', 'modmail_shared_db')
         
         try:
             # Create Motor client for direct MongoDB access with enhanced connection settings
@@ -121,7 +100,7 @@ class ClaimThread(commands.Cog):
                 appName='ModmailTicketPlugin'    # Descriptive app name
             )
             
-            # Test connection
+            # Select database
             self.mongo_db = self.mongo_client[self.mongo_db_name]
             
             # Create collections with validation
@@ -153,19 +132,19 @@ class ClaimThread(commands.Cog):
             # Run connection test
             self.bot.loop.create_task(test_connection())
         
-        except (ConnectionFailure, ServerSelectionTimeoutError) as e:
-            print(f"❌ MongoDB Connection Error: {e}")
-            print("Fallback to bot's shared API for data access")
-            
-            # Fallback to bot's shared API if direct connection fails
-            self.ticket_claims_collection = bot.api.get_shared_partition('ticket_claims')
-            self.ticket_stats_collection = bot.api.get_shared_partition('ticket_stats')
-            self.config_collection = bot.api.get_plugin_partition(self)
-        
         except Exception as e:
-            print(f"Unexpected MongoDB Error: {e}")
-            raise
-        
+            print(f"Unexpected MongoDB Connection Error: {e}")
+            
+            # Fallback mechanism
+            if hasattr(bot, 'api'):
+                try:
+                    self.ticket_claims_collection = bot.api.get_shared_partition('ticket_claims')
+                    self.ticket_stats_collection = bot.api.get_shared_partition('ticket_stats')
+                    self.config_collection = bot.api.get_plugin_partition(self)
+                    print("✅ Fallback to bot's shared API successful")
+                except Exception as fallback_error:
+                    print(f"❌ Fallback to bot's shared API failed: {fallback_error}")
+            
         # Initialize necessary attributes
         self.check_message_cache = {}
         self.default_config = {
@@ -749,7 +728,7 @@ class ClaimThread(commands.Cog):
                 await ctx.send("No ticket stats available.")
 
     @commands.Cog.listener()
-    async def on_thread_close(self, *args, **kwargs):
+    async def on_thread_close(self, thread, closer):
         """
         Handle thread closure and clean up ticket claims
         
@@ -759,46 +738,29 @@ class ClaimThread(commands.Cog):
         3. Perform any necessary cleanup
         """
         try:
-            # Extract relevant information from arguments
-            # Modmail might pass different arguments, so we use flexible unpacking
-            thread = None
-            closer = None
-            
-            # Try to extract thread and closer from different possible argument positions
-            if len(args) >= 1:
-                thread = args[0]
-            if len(args) >= 2:
-                closer = args[1]
-            
-            # If thread is not found in positional args, check kwargs
-            if thread is None:
-                thread = kwargs.get('thread')
-            if closer is None:
-                closer = kwargs.get('closer')
-            
-            # If we can't find a thread, log and return
-            if thread is None:
-                print("on_thread_close: No thread found to process")
+            # Ensure thread and closer are valid
+            if not thread or not closer:
+                print("Invalid thread or closer in on_thread_close")
                 return
-            
-            # Remove claim for this thread
-            claim_filter = {
-                'thread_id': str(thread.channel.id),
-                'guild_id': str(thread.guild.id)
-            }
-            
-            # Delete the claim document
-            await self.ticket_claims_collection.delete_one(claim_filter)
-            
-            # Optional: Log thread closure
-            print(f"Thread {thread.channel.id} closed. Claim removed.")
-            
-            # Update ticket stats if possible
-            if closer:
-                await self.update_ticket_stats(thread, closer)
-        
+
+            # Get channel ID and guild ID
+            channel_id = str(thread.channel.id)
+            guild_id = str(thread.channel.guild.id) if hasattr(thread.channel, 'guild') else 'unknown'
+
+            # Remove thread claim
+            await self.ticket_claims_collection.delete_one({
+                'thread_id': channel_id,
+                'guild_id': guild_id
+            })
+
+            # Update ticket statistics
+            await self.update_ticket_stats(thread, closer)
+
         except Exception as e:
             print(f"Error in on_thread_close: {e}")
+            # Log the full traceback for debugging
+            import traceback
+            traceback.print_exc()
 
     @commands.command(name="sync_ticket_stats")
     @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
