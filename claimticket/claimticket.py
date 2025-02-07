@@ -847,12 +847,12 @@ class ClaimThread(commands.Cog):
         # Timeout reached without confirmation
         return False
 
-    @commands.command(name="notify", aliases=["n"])
+    @commands.command(name="thread_notify", aliases=["tn", "n"])
     @commands.check(is_in_thread)
-    async def toggle_notifications(self, ctx):
+    async def toggle_thread_notifications(self, ctx):
         """
         Toggle notifications for the current thread
-        Aliases: .notify, .n
+        Aliases: .thread_notify, .tn, .n
         """
         # Get the current thread
         thread = ctx.channel
