@@ -446,7 +446,7 @@ class ClaimThread(commands.Cog):
         if limit < 0:
             return await ctx.send("Limit cannot be negative")
             
-        await self.config_collection.find_one_and_update(
+        await self.config_collection.update_one(
             {'_id': 'claim_config'},
             {'$set': {'claim_limit': limit}},
             upsert=True
@@ -485,7 +485,7 @@ class ClaimThread(commands.Cog):
             return await ctx.send("That role is already an override role")
             
         override_roles.append(role.id)
-        await self.config_collection.find_one_and_update(
+        await self.config_collection.update_one(
             {'_id': 'claim_config'},
             {'$set': {'override_roles': override_roles}},
             upsert=True
@@ -503,7 +503,7 @@ class ClaimThread(commands.Cog):
             return await ctx.send("That role is not an override role")
             
         override_roles.remove(role.id)
-        await self.config_collection.find_one_and_update(
+        await self.config_collection.update_one(
             {'_id': 'claim_config'},
             {'$set': {'override_roles': override_roles}},
             upsert=True
@@ -525,13 +525,31 @@ class ClaimThread(commands.Cog):
             print(f"  Thread: {thread}")
             print(f"  Closer: {closer}")
             
-            # Check thread status
+            # Check thread status and existence
             if thread is None:
                 print("❌ Thread is None, cannot log stats")
                 return
             
             # Determine thread status and lifecycle
-            is_closed = getattr(thread, 'closed', False)
+            is_closed = False
+            try:
+                # Check if thread exists and is closed
+                is_closed = thread.closed if hasattr(thread, 'closed') else False
+                
+                # Additional check for thread existence
+                if hasattr(thread, 'guild'):
+                    try:
+                        # Attempt to fetch the thread to verify its existence
+                        await thread.guild.fetch_channel(thread.id)
+                    except discord.NotFound:
+                        # Thread no longer exists, mark as closed
+                        is_closed = True
+                    except Exception as fetch_error:
+                        print(f"⚠️ Error fetching thread: {fetch_error}")
+            except Exception as status_error:
+                print(f"⚠️ Error checking thread status: {status_error}")
+                is_closed = False
+            
             thread_id = str(thread.id)
             guild_id = str(thread.guild.id) if thread.guild else 'unknown'
             
@@ -738,96 +756,6 @@ class ClaimThread(commands.Cog):
         await ctx.send(f"Claim limit set to {limit} threads.")
 
     # Removed thread_claims method
-
-    async def check_reply(self, ctx):
-        """
-        Comprehensive debugging method for reply checks
-        
-        Diagnoses issues with thread claims and reply permissions
-        """
-        try:
-            print("🔍 Debugging check_reply:")
-            print(f"  Context: {ctx}")
-            print(f"  Command: {ctx.command}")
-            print(f"  Channel: {ctx.channel}")
-            print(f"  Author: {ctx.author}")
-            
-            # Check if thread attribute exists
-            if not hasattr(ctx, 'thread'):
-                print("❌ No thread attribute found")
-                return True
-            
-            # Get the cog
-            cog = ctx.bot.get_cog('ClaimThread')
-            if not cog:
-                print("❌ ClaimThread cog not found")
-                return True
-            
-            # Debug cog attributes
-            print("🔍 Cog Attributes:")
-            cog_attrs = [
-                'ticket_claims_collection', 
-                'ticket_stats_collection', 
-                'mongo_client', 
-                'mongo_db', 
-                'check_message_cache'
-            ]
-            for attr in cog_attrs:
-                if hasattr(cog, attr):
-                    print(f"  ✅ {attr} exists")
-                else:
-                    print(f"  ❌ {attr} does not exist")
-            
-            # Check for collections and database
-            try:
-                # Attempt to access collections
-                if hasattr(cog, 'ticket_claims_collection'):
-                    claims_count = await cog.ticket_claims_collection.count_documents({})
-                    print(f"📊 Ticket Claims Collection:")
-                    print(f"  Total Documents: {claims_count}")
-            
-                if hasattr(cog, 'ticket_stats_collection'):
-                    stats_count = await cog.ticket_stats_collection.count_documents({})
-                    print(f"📊 Ticket Stats Collection:")
-                    print(f"  Total Documents: {stats_count}")
-        
-            except Exception as collection_error:
-                print(f"❌ Error accessing collections: {collection_error}")
-            
-            # Check message cache
-            if hasattr(cog, 'check_message_cache'):
-                print("📋 Message Cache:")
-                for channel_id, timestamp in cog.check_message_cache.items():
-                    print(f"  Channel {channel_id}: {timestamp}")
-            
-            # Attempt to find claim
-            try:
-                # Use getattr with a fallback to prevent AttributeError
-                claims_collection = getattr(cog, 'ticket_claims_collection', None)
-                
-                if claims_collection:
-                    claim = await claims_collection.find_one({
-                        'thread_id': str(ctx.channel.id)
-                    })
-                    print(f"🔍 Claim found: {claim}")
-                else:
-                    print("❌ No claims collection available")
-        
-            except Exception as claim_error:
-                print(f"❌ Error finding claim: {claim_error}")
-                import traceback
-                traceback.print_exc()
-        
-            return True
-        
-        except Exception as e:
-            print(f"❌ Comprehensive Error in check_reply: {e}")
-            import traceback
-            traceback.print_exc()
-            return True
-
-# Removed check_reply function to resolve MongoDB collection errors
-# This function was causing issues with collection method calls
 
 async def setup(bot):
     """
