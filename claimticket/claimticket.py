@@ -78,6 +78,7 @@ async def check_reply(ctx):
         return True
 
 
+@commands.check
 async def is_in_thread(ctx):
     """
     Check if the command is being used in a thread channel
@@ -89,12 +90,9 @@ async def is_in_thread(ctx):
         bool: True if in a thread, False otherwise
     """
     # Check if the channel is a thread
-    is_thread = isinstance(ctx.channel, discord.Thread)
-    
-    if not is_thread:
-        await ctx.send("❌ This command can only be used in a thread.")
-    
-    return is_thread
+    if not isinstance(ctx.channel, discord.Thread):
+        raise commands.CheckFailure("This command can only be used in a thread.")
+    return True
 
 
 class ClaimThread(commands.Cog):
@@ -1082,7 +1080,7 @@ class ClaimThread(commands.Cog):
                 'thread_id': str(ctx.thread.channel.id),
                 'guild_id': str(ctx.guild.id)
             })
-            
+
             if existing_claim:
                 # Check if current user is already a claimer
                 if str(ctx.author.id) in existing_claim.get('claimers', []):
