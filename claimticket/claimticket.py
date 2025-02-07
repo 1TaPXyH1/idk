@@ -117,9 +117,9 @@ class ClaimThread(commands.Cog):
             # Create Motor client for direct MongoDB access with comprehensive connection settings
             self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(
                 self.mongo_uri, 
-                serverSelectionTimeoutMS=15000,  # Increased timeout
-                connectTimeoutMS=15000,          # Increased connection timeout
-                socketTimeoutMS=15000,           # Increased socket timeout
+                serverSelectionTimeoutMS=30000,  # 30-second server selection timeout
+                connectTimeoutMS=30000,          # 30-second connection timeout
+                socketTimeoutMS=30000,           # 30-second socket timeout
                 maxPoolSize=10,                  # Connection pool size
                 minPoolSize=1,                   # Minimum connections in pool
                 retryWrites=True,                # Retry write operations
@@ -127,8 +127,6 @@ class ClaimThread(commands.Cog):
                 
                 # Additional diagnostic options
                 socketKeepAlive=True,            # Maintain connection
-                connectTimeoutMS=30000,          # 30-second connection timeout
-                serverSelectionTimeoutMS=30000,  # 30-second server selection timeout
                 waitQueueTimeoutMS=30000         # Wait queue timeout
             )
             
