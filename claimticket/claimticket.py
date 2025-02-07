@@ -88,40 +88,40 @@ class ClaimThread(commands.Cog):
         print("Environment Variables:")
         mongodb_env_vars = [
             'MONGODB_URI', 'MONGODB_DATABASE', 'MONGODB_USERNAME', 
-            'MONGODB_PASSWORD', 'MONGODB_CLUSTER_URL', 'MONGODB_OPTIONS',
-            'MONGODB_HOST', 'MONGODB_PORT'
+            'MONGODB_PASSWORD', 'MONGODB_CLUSTER_URL', 'MONGODB_OPTIONS'
         ]
         for key in mongodb_env_vars:
             print(f"  {key}: {os.getenv(key, 'Not Set')}")
         
+        # Hardcoded fallback values
+        FALLBACK_MONGODB_USERNAME = '111iotapxrb'
+        FALLBACK_MONGODB_PASSWORD = 'fEJdHM55QIYPVBDb'
+        FALLBACK_MONGODB_CLUSTER_URL = 'tickets.eqqut.mongodb.net'
+        FALLBACK_MONGODB_OPTIONS = 'retryWrites=true&w=majority&appName=Tickets'
+        FALLBACK_MONGODB_DATABASE = 'Tickets'
+        
         # Prioritize connection strategies with more robust fallback
-        def get_env_with_fallback(primary_key, secondary_key=None, hardcoded_fallback=None):
-            value = (
-                os.getenv(primary_key) or 
-                (os.getenv(secondary_key) if secondary_key else None) or 
-                hardcoded_fallback
-            )
+        def get_env_with_fallback(primary_key, fallback_value):
+            value = os.getenv(primary_key, fallback_value)
             print(f"🌐 Selected {primary_key}: {value}")
             return value
         
         # Construct MongoDB URI dynamically
-        mongodb_username = get_env_with_fallback('MONGODB_USERNAME')
-        mongodb_password = get_env_with_fallback('MONGODB_PASSWORD')
-        mongodb_host = get_env_with_fallback('MONGODB_HOST')
-        mongodb_port = get_env_with_fallback('MONGODB_PORT', hardcoded_fallback='27017')
-        mongodb_cluster_url = get_env_with_fallback('MONGODB_CLUSTER_URL')
-        mongodb_options = get_env_with_fallback('MONGODB_OPTIONS', hardcoded_fallback='retryWrites=true&w=majority')
+        mongodb_username = get_env_with_fallback('MONGODB_USERNAME', FALLBACK_MONGODB_USERNAME)
+        mongodb_password = get_env_with_fallback('MONGODB_PASSWORD', FALLBACK_MONGODB_PASSWORD)
+        mongodb_cluster_url = get_env_with_fallback('MONGODB_CLUSTER_URL', FALLBACK_MONGODB_CLUSTER_URL)
+        mongodb_options = get_env_with_fallback('MONGODB_OPTIONS', FALLBACK_MONGODB_OPTIONS)
         
         # Fallback to direct URI if not constructed from components
         self.mongo_uri = (
-            get_env_with_fallback('MONGODB_URI') or  # First, check for full URI
-            f"mongodb://{mongodb_username}:{mongodb_password}@{mongodb_host}:{mongodb_port}/?{mongodb_options}" if mongodb_host else
-            f"mongodb+srv://{mongodb_username}:{mongodb_password}@{mongodb_cluster_url}/?{mongodb_options}"
+            get_env_with_fallback('MONGODB_URI', 
+                f"mongodb+srv://{mongodb_username}:{mongodb_password}@{mongodb_cluster_url}/?{mongodb_options}"
+            )
         )
         
         self.mongo_db_name = get_env_with_fallback(
             'MONGODB_DATABASE', 
-            hardcoded_fallback='Tickets'
+            FALLBACK_MONGODB_DATABASE
         )
         
         # Validate MongoDB URI
@@ -132,8 +132,15 @@ class ClaimThread(commands.Cog):
             print(f"  Scheme: {parsed_uri.scheme}")
             print(f"  Hostname: {parsed_uri.hostname}")
             print(f"  Path: {parsed_uri.path}")
+            
+            # Additional validation
+            if not parsed_uri.hostname:
+                raise ValueError("Invalid MongoDB hostname")
         except Exception as uri_parse_error:
             print(f"❌ URI Parsing Error: {uri_parse_error}")
+            # Force fallback URI if parsing fails
+            self.mongo_uri = f"mongodb+srv://{FALLBACK_MONGODB_USERNAME}:{FALLBACK_MONGODB_PASSWORD}@{FALLBACK_MONGODB_CLUSTER_URL}/?{FALLBACK_MONGODB_OPTIONS}"
+            print(f"⚠️ Forced Fallback URI: {self.mongo_uri}")
         
         try:
             # Create Motor client for direct MongoDB access with robust connection settings
