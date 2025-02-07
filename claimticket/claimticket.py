@@ -734,7 +734,7 @@ class ClaimThread(commands.Cog):
             # Determine if channel exists and is closed
             is_closed = state == 'closed'
             
-            # Check channel existence
+            # Check channel existence and status
             try:
                 if thread and hasattr(thread, 'guild'):
                     try:
@@ -743,7 +743,7 @@ class ClaimThread(commands.Cog):
                         # If we can fetch the channel, it's not closed
                         is_closed = False
                     except discord.NotFound:
-                        # Channel completely deleted
+                        # Thread no longer exists, mark as closed
                         is_closed = True
                     except Exception as fetch_error:
                         print(f"⚠️ Error checking channel existence: {fetch_error}")
@@ -754,6 +754,11 @@ class ClaimThread(commands.Cog):
                 print(f"⚠️ Additional channel existence check error: {e}")
                 is_closed = False
             
+            # Retrieve existing ticket data to preserve last user and moderator IDs
+            existing_ticket = await self.ticket_stats_collection.find_one({
+                'thread_id': str(thread.id) if thread else 'unknown'
+            })
+            
             # Prepare minimal stats document
             stats_doc = {
                 'thread_id': str(thread.id) if thread else 'unknown',
@@ -761,11 +766,23 @@ class ClaimThread(commands.Cog):
                 'current_state': state,
                 'status': 'closed' if is_closed else 'open',
                 'is_closed': is_closed,
-                'last_updated': datetime.utcnow(),
-                'closed_at': datetime.utcnow() if is_closed else None,
-                'last_user_id': str(user.id) if user else None,
-                'moderator_id': str(user.id) if user else None
             }
+            
+            # Preserve existing last_user_id and moderator_id if they exist
+            if existing_ticket:
+                if existing_ticket.get('last_user_id'):
+                    stats_doc['last_user_id'] = existing_ticket['last_user_id']
+                if existing_ticket.get('moderator_id'):
+                    stats_doc['moderator_id'] = existing_ticket['moderator_id']
+            
+            # Add new user information if provided and state is not closed
+            if user and state != 'closed':
+                stats_doc['last_user_id'] = str(user.id)
+                stats_doc['moderator_id'] = str(user.id)
+            
+            # Add closure timestamp if closed
+            if is_closed:
+                stats_doc['closed_at'] = datetime.utcnow()
             
             # Upsert ticket stats
             result = await self.ticket_stats_collection.update_one(
