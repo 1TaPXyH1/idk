@@ -54,37 +54,47 @@ class ClaimThread(commands.Cog):
         Initialize MongoDB connection and collections
         """
         try:
-            # Establish MongoDB connection
-            self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(self.mongo_uri)
+            # Initialize ticket stats collection with migration
+            self.ticket_stats_collection = self.mongo_db['ticket_stats']
             
-            # Select database
-            self.mongo_db = self.mongo_client[self.mongo_db_name]
-            
-            # Initialize collections with error suppression
-            try:
-                # Ticket stats collection
-                self.ticket_stats_collection = self.mongo_db['ticket_stats']
-                
-                # Configuration collection
-                self.config_collection = self.mongo_db['plugin_configs']
-                
-            except Exception as collection_error:
-                # Ensure collections exist even if initialization fails
-                self.ticket_stats_collection = self.mongo_db['ticket_stats']
-                self.config_collection = self.mongo_db['plugin_configs']
-            
-            # Verify plugin configuration collection
-            config_exists = await self.config_collection.find_one({'_id': 'claim_config'})
-            if not config_exists:
-                await self.config_collection.insert_one({
-                    '_id': 'claim_config',
-                    'claim_limit': 5,
-                    'override_roles': []
-                })
+            # Perform data migration to ensure consistent schema
+            await self.migrate_ticket_stats_collection()
         
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
+        except Exception:
+            # Fallback collection initialization
+            self.ticket_stats_collection = self.mongo_db['ticket_stats']
+
+    async def migrate_ticket_stats_collection(self):
+        """
+        Migrate existing ticket stats to use consistent schema
+        """
+        try:
+            # Find documents with old 'thread_id' key
+            old_docs = await self.ticket_stats_collection.find({
+                'thread_id': {'$exists': True}
+            }).to_list(length=None)
+            
+            # Migrate each document
+            for doc in old_docs:
+                # Create new document with correct keys
+                new_doc = {
+                    'channel_id': doc.get('thread_id', doc.get('_id')),
+                    'guild_id': doc.get('guild_id', 'unknown'),
+                    'current_state': doc.get('current_state', 'unknown'),
+                    'moderator_id': doc.get('moderator_id'),
+                    'created_at': doc.get('created_at'),
+                    'closed_at': doc.get('closed_at')
+                }
+                
+                # Replace old document with new one
+                await self.ticket_stats_collection.replace_one(
+                    {'_id': doc['_id']},
+                    new_doc
+                )
+        
+        except Exception:
+            # Silently handle migration errors
+            pass
 
     def __init__(self, bot):
         self.bot = bot
@@ -174,7 +184,12 @@ class ClaimThread(commands.Cog):
                 
                 for ticket in active_tickets:
                     try:
-                        channel_id = int(ticket['channel_id'])
+                        # Safely get channel_id with fallback
+                        channel_id = ticket.get('channel_id') or ticket.get('thread_id')
+                        if not channel_id:
+                            continue
+                        
+                        channel_id = int(channel_id)
                         guild_id = int(ticket.get('guild_id', 0))
                         
                         # Find the guild
@@ -524,12 +539,12 @@ class ClaimThread(commands.Cog):
             except Exception:
                 is_closed = False
             
-            thread_id = str(thread.id)
+            channel_id = str(thread.id)
             guild_id = str(thread.guild.id) if thread.guild else 'unknown'
             
             # Prepare stats document
             stats_doc = {
-                'channel_id': thread_id,
+                'channel_id': channel_id,
                 'guild_id': guild_id,
                 'created_at': thread.created_at,
                 'moderator_id': str(closer.id) if closer else None,
@@ -541,7 +556,7 @@ class ClaimThread(commands.Cog):
             try:
                 # Try to find existing document for this thread
                 existing_doc = await self.ticket_stats_collection.find_one({
-                    'channel_id': thread_id,
+                    'channel_id': channel_id,
                     'guild_id': guild_id
                 })
                 
@@ -631,7 +646,7 @@ class ClaimThread(commands.Cog):
         try:
             # Count active claims using ticket stats collection
             active_claims = await self.ticket_stats_collection.count_documents({
-                'last_user_id': str(user_id),
+                'moderator_id': str(user_id),
                 'current_state': {'$ne': 'closed'}
             })
             return active_claims
@@ -739,11 +754,11 @@ class ClaimThread(commands.Cog):
             # Silently handle any unexpected errors
             pass
 
-    async def verify_thread_closure(self, thread_id, timeout=300):
+    async def verify_thread_closure(self, channel_id, timeout=300):
         """
         Verify if a thread is actually closed
         
-        :param thread_id: ID of the thread to check
+        :param channel_id: ID of the thread to check
         :param timeout: Maximum time to wait for closure (in seconds)
         :return: Boolean indicating if thread is closed
         """
@@ -752,7 +767,7 @@ class ClaimThread(commands.Cog):
         while (datetime.utcnow() - start_time).total_seconds() < timeout:
             try:
                 # Attempt to fetch the thread
-                thread = self.bot.get_channel(thread_id)
+                thread = self.bot.get_channel(channel_id)
                 
                 # Check thread state
                 if thread is None:
