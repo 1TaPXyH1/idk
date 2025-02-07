@@ -737,150 +737,80 @@ class ClaimThread(commands.Cog):
             closer: The user who closed the thread
         """
         try:
-            # Safely extract guild ID
-            guild_id = getattr(thread, 'guild_id', None) or \
-                       getattr(getattr(thread, 'channel', None), 'guild_id', None) or \
-                       'unknown'
-            
-            # Safely extract closer ID
-            closer_id = str(closer.id) if closer else 'unknown'
-            
-            # Prepare stats document
+            # Prepare minimal stats document
             stats_doc = {
-                'guild_id': str(guild_id),
-                'closer_id': closer_id,
-                'closed_at': datetime.utcnow(),
-                'thread_type': getattr(thread, 'type', 'unknown')
+                'thread_id': str(thread.id),
+                'guild_id': str(thread.guild.id),
+                'closed_by_id': str(closer.id) if closer else 'unknown',
+                'closed_at': datetime.utcnow()
             }
             
             # Insert stats document
             await self.ticket_stats_collection.insert_one(stats_doc)
-            print(f"✅ Ticket stats updated for thread in guild {guild_id}")
+            print(f"✅ Ticket stats updated for thread {thread.id}")
         
         except Exception as e:
             print(f"❌ Error updating ticket stats: {e}")
             import traceback
             traceback.print_exc()
 
-    @commands.Cog.listener()
-    async def on_thread_close(self, thread, closer, *args, **kwargs):
+    @commands.command(name="claim")
+    @commands.check(is_in_thread)
+    async def claim_thread(self, ctx):
         """
-        Handle thread closure and clean up ticket claims
-        
-        This method is called when a thread is closed and should:
-        1. Remove the claim for the closed thread
-        2. Update ticket stats
-        3. Perform any necessary cleanup
+        Claim the current ticket thread
         """
         try:
-            # Safely extract channel and guild IDs
-            channel_id = str(getattr(thread, 'id', getattr(thread, 'channel_id', 'unknown')))
-            guild_id = str(getattr(thread, 'guild_id', 
-                                   getattr(getattr(thread, 'channel', None), 'guild_id', 'unknown')))
+            thread = ctx.channel
+            user = ctx.author
 
-            # Remove thread claim
-            delete_result = await self.ticket_claims_collection.delete_one({
-                'thread_id': channel_id,
-                'guild_id': guild_id
+            # Check if thread is already claimed
+            existing_claim = await self.ticket_claims_collection.find_one({
+                'thread_id': str(thread.id),
+                'guild_id': str(thread.guild.id)
             })
-            
-            print(f"🗑️ Deleted {delete_result.deleted_count} claim(s) for thread {channel_id}")
 
-            # Update ticket statistics
-            await self.update_ticket_stats(thread, closer)
+            if existing_claim:
+                await ctx.send("❌ This ticket is already claimed.")
+                return
 
-        except Exception as e:
-            print(f"❌ Error in on_thread_close: {e}")
-            import traceback
-            traceback.print_exc()
-
-    async def check_reply(self, thread, message):
-        """
-        Check and handle replies in ticket threads
-        
-        Args:
-            thread: The thread context
-            message: The message to check
-        """
-        try:
-            # Safely find an existing claim
-            claim_filter = {
+            # Create new claim
+            claim_doc = {
                 'thread_id': str(thread.id),
                 'guild_id': str(thread.guild.id)
             }
-            existing_claim = await self.ticket_claims_collection.find_one(claim_filter)
             
-            if existing_claim:
-                # Process existing claim logic
-                print(f"✅ Found existing claim for thread {thread.id}")
-            else:
-                print(f"ℹ️ No existing claim found for thread {thread.id}")
-        
+            await self.ticket_claims_collection.insert_one(claim_doc)
+            await ctx.send(f"✅ {user.mention} has claimed this ticket.")
+
         except Exception as e:
-            print(f"❌ Error in check_reply: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"❌ Error in claim_thread: {e}")
+            await ctx.send("An error occurred while claiming the ticket.")
 
-    @commands.command(name="show_ticket_stats")
-    @checks.has_permissions(PermissionLevel.SUPPORTER)
-    async def show_ticket_stats(self, ctx, user_id: int = None):
+    @commands.command(name="unclaim")
+    @commands.check(is_in_thread)
+    async def unclaim_thread(self, ctx):
         """
-        Show ticket stats for a user or all users
-        """
-        if user_id:
-            # Fetch stats for specific user
-            user_stats = await self.ticket_stats_collection.find_one({'user_id': str(user_id)})
-            
-            if user_stats:
-                await ctx.send(f"User {user_id} has closed {user_stats.get('closed_tickets', 0)} tickets.")
-            else:
-                await ctx.send(f"No ticket stats found for user {user_id}.")
-        else:
-            # Fetch all user stats
-            all_stats = await self.ticket_stats_collection.find().to_list(length=None)
-            
-            if all_stats:
-                stats_message = "Ticket Stats:\n"
-                for stat in all_stats:
-                    stats_message += f"User {stat['user_id']}: {stat['closed_tickets']} tickets\n"
-                await ctx.send(stats_message)
-            else:
-                await ctx.send("No ticket stats available.")
-
-    @commands.Cog.listener()
-    async def on_thread_close(self, thread, closer, *args, **kwargs):
-        """
-        Handle thread closure and clean up ticket claims
-        
-        This method is called when a thread is closed and should:
-        1. Remove the claim for the closed thread
-        2. Update ticket stats
-        3. Perform any necessary cleanup
+        Unclaim the current ticket thread
         """
         try:
-            # Ensure thread and closer are valid
-            if not thread or not closer:
-                print("Invalid thread or closer in on_thread_close")
-                return
+            thread = ctx.channel
+            user = ctx.author
 
-            # Get channel ID and guild ID
-            channel_id = str(thread.channel.id)
-            guild_id = str(thread.channel.guild.id) if hasattr(thread.channel, 'guild') else 'unknown'
-
-            # Remove thread claim
-            await self.ticket_claims_collection.delete_one({
-                'thread_id': channel_id,
-                'guild_id': guild_id
+            # Delete the claim
+            delete_result = await self.ticket_claims_collection.delete_one({
+                'thread_id': str(thread.id),
+                'guild_id': str(thread.guild.id)
             })
 
-            # Update ticket statistics
-            await self.update_ticket_stats(thread, closer)
+            if delete_result.deleted_count > 0:
+                await ctx.send(f"✅ Ticket unclaimed.")
+            else:
+                await ctx.send("❌ This ticket was not claimed.")
 
         except Exception as e:
-            print(f"Error in on_thread_close: {e}")
-            # Log the full traceback for debugging
-            import traceback
-            traceback.print_exc()
+            print(f"❌ Error in unclaim_thread: {e}")
+            await ctx.send("An error occurred while unclaiming the ticket.")
 
     @commands.command(name="sync_ticket_stats")
     @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
@@ -1023,6 +953,7 @@ class ClaimThread(commands.Cog):
         
         except Exception as e:
             print(f"Error tracking ticket count for user {user_id}: {e}")
+            return {}
 
     @commands.command(name="set_export_webhook")
     @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
