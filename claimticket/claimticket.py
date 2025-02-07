@@ -86,29 +86,42 @@ class ClaimThread(commands.Cog):
         # Comprehensive environment variable logging
         print("🔍 Initializing MongoDB Connection")
         print("Environment Variables:")
-        for key in ['MONGODB_URI', 'MONGODB_DATABASE', 'MONGO_URI', 'MONGO_DATABASE']:
+        mongodb_env_vars = [
+            'MONGODB_URI', 'MONGODB_DATABASE', 'MONGODB_USERNAME', 
+            'MONGODB_PASSWORD', 'MONGODB_CLUSTER_URL', 'MONGODB_OPTIONS',
+            'MONGODB_HOST', 'MONGODB_PORT'
+        ]
+        for key in mongodb_env_vars:
             print(f"  {key}: {os.getenv(key, 'Not Set')}")
         
         # Prioritize connection strategies with more robust fallback
-        def get_env_with_fallback(primary_key, secondary_key, hardcoded_fallback):
+        def get_env_with_fallback(primary_key, secondary_key=None, hardcoded_fallback=None):
             value = (
                 os.getenv(primary_key) or 
-                os.getenv(secondary_key) or 
+                (os.getenv(secondary_key) if secondary_key else None) or 
                 hardcoded_fallback
             )
             print(f"🌐 Selected {primary_key}: {value}")
             return value
         
-        self.mongo_uri = get_env_with_fallback(
-            'MONGODB_URI', 
-            'MONGO_URI', 
-            'mongodb+srv://111iotapxrb:fEJdHM55QIYPVBDb@tickets.eqqut.mongodb.net/?retryWrites=true&w=majority&appName=Tickets'
+        # Construct MongoDB URI dynamically
+        mongodb_username = get_env_with_fallback('MONGODB_USERNAME')
+        mongodb_password = get_env_with_fallback('MONGODB_PASSWORD')
+        mongodb_host = get_env_with_fallback('MONGODB_HOST')
+        mongodb_port = get_env_with_fallback('MONGODB_PORT', hardcoded_fallback='27017')
+        mongodb_cluster_url = get_env_with_fallback('MONGODB_CLUSTER_URL')
+        mongodb_options = get_env_with_fallback('MONGODB_OPTIONS', hardcoded_fallback='retryWrites=true&w=majority')
+        
+        # Fallback to direct URI if not constructed from components
+        self.mongo_uri = (
+            get_env_with_fallback('MONGODB_URI') or  # First, check for full URI
+            f"mongodb://{mongodb_username}:{mongodb_password}@{mongodb_host}:{mongodb_port}/?{mongodb_options}" if mongodb_host else
+            f"mongodb+srv://{mongodb_username}:{mongodb_password}@{mongodb_cluster_url}/?{mongodb_options}"
         )
         
         self.mongo_db_name = get_env_with_fallback(
             'MONGODB_DATABASE', 
-            'MONGO_DATABASE', 
-            'Tickets'
+            hardcoded_fallback='Tickets'
         )
         
         # Validate MongoDB URI
@@ -148,24 +161,16 @@ class ClaimThread(commands.Cog):
                 try:
                     print("🔬 Starting Comprehensive MongoDB Connection Test")
                     
-                    # Test basic connectivity
-                    await self.mongo_db.command('ping')
+                    # Test basic connectivity with a less privileged command
+                    ping_result = await self.mongo_db.command('ping')
+                    print(f"✅ Basic Connectivity: {ping_result}")
                     
-                    # Log additional connection details
-                    client_info = await self.mongo_db.command('buildInfo')
-                    server_status = await self.mongo_db.command('serverStatus')
-                    
+                    # Log basic connection details
                     print(f"✅ MongoDB Connection Successful")
-                    print(f"   🔌 MongoDB Version: {client_info.get('version', 'Unknown')}")
                     print(f"   📂 Database: {self.mongo_db.name}")
                     print(f"   🌐 URI: {self.mongo_uri}")
                     
-                    # Detailed server information
-                    print("\n📊 Server Details:")
-                    print(f"   Uptime: {server_status.get('uptime', 'Unknown')} seconds")
-                    print(f"   Connections: {server_status.get('connections', {}).get('current', 'Unknown')}")
-                    
-                    # Optional: Log collection stats
+                    # Optional: Log collection stats with error handling
                     print("\n📋 Collection Statistics:")
                     for collection_name in ['ticket_claims', 'ticket_stats', 'plugin_configs']:
                         collection = self.mongo_db[collection_name]
@@ -180,6 +185,16 @@ class ClaimThread(commands.Cog):
                     # Log full traceback for detailed debugging
                     import traceback
                     traceback.print_exc()
+                
+                # Always create collections if they don't exist
+                try:
+                    # Ensure collections exist
+                    await self.mongo_db.create_collection('ticket_claims', check_exists=True)
+                    await self.mongo_db.create_collection('ticket_stats', check_exists=True)
+                    await self.mongo_db.create_collection('plugin_configs', check_exists=True)
+                    print("✅ Verified/Created necessary collections")
+                except Exception as collection_creation_error:
+                    print(f"❌ Collection Creation Error: {collection_creation_error}")
             
             # Run connection test
             self.bot.loop.create_task(test_connection())
