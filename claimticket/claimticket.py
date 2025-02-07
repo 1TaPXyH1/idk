@@ -167,14 +167,19 @@ class ClaimThread(commands.Cog):
         
         while not self.bot.is_closed():
             try:
-                # Find all active tickets
+                # Find all active tickets, handling both channel_id and thread_id
                 active_tickets = await self.ticket_stats_collection.find({
                     'current_state': {'$ne': 'closed'}
                 }).to_list(length=None)
                 
                 for ticket in active_tickets:
                     try:
-                        channel_id = int(ticket['channel_id'])
+                        # Safely get channel ID, prioritizing channel_id
+                        channel_id = ticket.get('channel_id') or ticket.get('thread_id')
+                        if not channel_id:
+                            continue
+                        
+                        channel_id = int(channel_id)
                         guild_id = int(ticket.get('guild_id', 0))
                         
                         # Find the guild
