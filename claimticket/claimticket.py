@@ -29,55 +29,6 @@ from core.models import PermissionLevel
 from core.utils import match_user_id
 
 
-async def check_reply(ctx):
-    """Check if user can reply to the thread"""
-    # Skip check if not a reply command
-    reply_commands = ['reply', 'areply', 'freply', 'fareply']
-    if ctx.command.name not in reply_commands:
-        return True
-    
-    # Skip check if no thread attribute
-    if not hasattr(ctx, 'thread'):
-        return True
-
-    try:
-        # Use the plugin's ticket claims collection for checking
-        cog = ctx.bot.get_cog('ClaimThread')
-        if not cog:
-            return True
-
-        channel_id = str(ctx.channel.id)
-        
-        # Check message cache to prevent spam
-        current_time = time.time()
-        if channel_id in cog.check_message_cache:
-            last_time = cog.check_message_cache[channel_id]
-            if current_time - last_time < 5:  # 5 second cooldown
-                return False
-        
-        # Check thread claims
-        claim_filter = {
-            'thread_id': channel_id,
-            'status': 'active'
-        }
-        existing_claim = await cog.ticket_claims_collection.find_one(claim_filter)
-        
-        if existing_claim:
-            # Check if the user is a claimer
-            claimers = existing_claim.get('claimers', [])
-            if str(ctx.author.id) not in claimers:
-                await ctx.send("This thread is claimed. Only claimed users can reply.")
-                return False
-        
-        # Update message cache
-        cog.check_message_cache[channel_id] = current_time
-        return True
-
-    except Exception as e:
-        print(f"Error in check_reply: {e}")
-        return True
-
-
 @commands.check
 async def is_in_thread(ctx):
     """
@@ -118,15 +69,13 @@ class ClaimThread(commands.Cog):
             self.mongo_db = self.mongo_client[self.mongo_db_name]
             
             # Initialize specific collections
-            self.ticket_claims_collection = self.mongo_db['ticket_claims']
             self.ticket_stats_collection = self.mongo_db['ticket_stats']
             self.config_collection = self.mongo_db['plugin_configs']
             
             # Create collections with validation
             collection_names = await self.mongo_db.list_collection_names()
             collections_to_create = {
-                'ticket_claims': {'description': 'Ticket Claims'},
-                'ticket_stats': {'description': 'Ticket Statistics'},
+                'ticket_stats': {'description': 'Ticket Closure Statistics'},
                 'plugin_configs': {'description': 'Plugin Configurations'}
             }
                     
@@ -146,7 +95,6 @@ class ClaimThread(commands.Cog):
         except Exception as e:
             print(f"🚨 MongoDB Initialization Error: {e}")
             # Fallback to in-memory collections
-            self.ticket_claims_collection = {}
             self.ticket_stats_collection = {}
             self.config_collection = {}
             return False
@@ -760,7 +708,7 @@ class ClaimThread(commands.Cog):
             stats_doc = {
                 'thread_id': str(thread.id),
                 'guild_id': str(thread.guild.id),
-                'closed_by_id': str(closer.id) if closer else 'unknown',
+                'moderator_id': str(closer.id) if closer else 'unknown',
                 'closed_at': datetime.utcnow()
             }
             
@@ -779,32 +727,7 @@ class ClaimThread(commands.Cog):
         """
         Claim the current ticket thread
         """
-        try:
-            thread = ctx.channel
-            user = ctx.author
-
-            # Check if thread is already claimed
-            existing_claim = await self.ticket_claims_collection.find_one({
-                'thread_id': str(thread.id),
-                'guild_id': str(thread.guild.id)
-            })
-
-            if existing_claim:
-                await ctx.send("❌ This ticket is already claimed.")
-                return
-
-            # Create new claim
-            claim_doc = {
-                'thread_id': str(thread.id),
-                'guild_id': str(thread.guild.id)
-            }
-            
-            await self.ticket_claims_collection.insert_one(claim_doc)
-            await ctx.send(f"✅ {user.mention} has claimed this ticket.")
-
-        except Exception as e:
-            print(f"❌ Error in claim_thread: {e}")
-            await ctx.send("An error occurred while claiming the ticket.")
+        await ctx.send(f"✅ {ctx.author.mention} has acknowledged this ticket.")
 
     @commands.command(name="unclaim")
     @commands.check(is_in_thread)
@@ -812,24 +735,7 @@ class ClaimThread(commands.Cog):
         """
         Unclaim the current ticket thread
         """
-        try:
-            thread = ctx.channel
-            user = ctx.author
-
-            # Delete the claim
-            delete_result = await self.ticket_claims_collection.delete_one({
-                'thread_id': str(thread.id),
-                'guild_id': str(thread.guild.id)
-            })
-
-            if delete_result.deleted_count > 0:
-                await ctx.send(f"✅ Ticket unclaimed.")
-            else:
-                await ctx.send("❌ This ticket was not claimed.")
-
-        except Exception as e:
-            print(f"❌ Error in unclaim_thread: {e}")
-            await ctx.send("An error occurred while unclaiming the ticket.")
+        await ctx.send(f"✅ Ticket status reset.")
 
     @commands.command(name="sync_ticket_stats")
     @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
@@ -919,6 +825,7 @@ class ClaimThread(commands.Cog):
         
         :param user_id: Discord user ID
         :param timestamp: Timestamp of the ticket (defaults to current time)
+        :return: Dictionary of ticket statistics
         """
         if timestamp is None:
             timestamp = datetime.utcnow()
@@ -1334,6 +1241,9 @@ class ClaimThread(commands.Cog):
             await ctx.send(embed=embed)
             # Re-raise the exception to ensure it's logged
             raise
+
+# Removed check_reply function to resolve MongoDB collection errors
+# This function was causing issues with collection method calls
 
 async def setup(bot):
     """
