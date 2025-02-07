@@ -83,21 +83,53 @@ class ClaimThread(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         
-        # Use environment variables for MongoDB configuration
-        self.mongo_uri = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/')
-        self.mongo_db_name = os.getenv('MONGODB_DATABASE', 'modmail_shared_db')
+        # Detailed MongoDB connection logging
+        print("🔍 Initializing MongoDB Connection")
+        print(f"Environment Variables:")
+        print(f"  MONGODB_URI: {os.getenv('MONGODB_URI', 'Not Set')}")
+        print(f"  MONGODB_DATABASE: {os.getenv('MONGODB_DATABASE', 'Not Set')}")
+        
+        # Prioritize connection strategies
+        self.mongo_uri = (
+            os.getenv('MONGODB_URI') or  # First, check for explicit URI
+            os.getenv('MONGO_URI') or    # Alternative env var
+            'mongodb+srv://111iotapxrb:fEJdHM55QIYPVBDb@tickets.eqqut.mongodb.net/?retryWrites=true&w=majority&appName=Tickets'  # Hardcoded fallback
+        )
+        
+        self.mongo_db_name = (
+            os.getenv('MONGODB_DATABASE') or  # First, check for explicit database name
+            os.getenv('MONGO_DATABASE') or    # Alternative env var
+            'Tickets'  # Fallback database name
+        )
+        
+        # Validate MongoDB URI
+        try:
+            from urllib.parse import urlparse
+            parsed_uri = urlparse(self.mongo_uri)
+            print(f"🌐 Parsed MongoDB URI:")
+            print(f"  Scheme: {parsed_uri.scheme}")
+            print(f"  Hostname: {parsed_uri.hostname}")
+            print(f"  Path: {parsed_uri.path}")
+        except Exception as uri_parse_error:
+            print(f"❌ URI Parsing Error: {uri_parse_error}")
         
         try:
-            # Create Motor client for direct MongoDB access with enhanced connection settings
+            # Create Motor client for direct MongoDB access with comprehensive connection settings
             self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(
                 self.mongo_uri, 
-                serverSelectionTimeoutMS=5000,  # 5 second timeout
-                connectTimeoutMS=5000,           # 5 second connection timeout
-                socketTimeoutMS=5000,            # Socket timeout
+                serverSelectionTimeoutMS=15000,  # Increased timeout
+                connectTimeoutMS=15000,          # Increased connection timeout
+                socketTimeoutMS=15000,           # Increased socket timeout
                 maxPoolSize=10,                  # Connection pool size
                 minPoolSize=1,                   # Minimum connections in pool
                 retryWrites=True,                # Retry write operations
-                appName='ModmailTicketPlugin'    # Descriptive app name
+                appName='ModmailTicketPlugin',   # Descriptive app name
+                
+                # Additional diagnostic options
+                socketKeepAlive=True,            # Maintain connection
+                connectTimeoutMS=30000,          # 30-second connection timeout
+                serverSelectionTimeoutMS=30000,  # 30-second server selection timeout
+                waitQueueTimeoutMS=30000         # Wait queue timeout
             )
             
             # Select database
@@ -108,32 +140,49 @@ class ClaimThread(commands.Cog):
             self.ticket_stats_collection = self.mongo_db['ticket_stats']
             self.config_collection = self.mongo_db['plugin_configs']
             
-            # Perform a simple connection test
+            # Perform a comprehensive connection test
             async def test_connection():
                 try:
-                    # Ping the database
+                    print("🔬 Starting Comprehensive MongoDB Connection Test")
+                    
+                    # Test basic connectivity
                     await self.mongo_db.command('ping')
                     
                     # Log additional connection details
                     client_info = await self.mongo_db.command('buildInfo')
+                    server_status = await self.mongo_db.command('serverStatus')
+                    
                     print(f"✅ MongoDB Connection Successful")
                     print(f"   🔌 MongoDB Version: {client_info.get('version', 'Unknown')}")
                     print(f"   📂 Database: {self.mongo_db.name}")
+                    print(f"   🌐 URI: {self.mongo_uri}")
+                    
+                    # Detailed server information
+                    print("\n📊 Server Details:")
+                    print(f"   Uptime: {server_status.get('uptime', 'Unknown')} seconds")
+                    print(f"   Connections: {server_status.get('connections', {}).get('current', 'Unknown')}")
                     
                     # Optional: Log collection stats
+                    print("\n📋 Collection Statistics:")
                     for collection_name in ['ticket_claims', 'ticket_stats', 'plugin_configs']:
                         collection = self.mongo_db[collection_name]
-                        count = await collection.count_documents({})
-                        print(f"   📊 {collection_name}: {count} documents")
+                        try:
+                            count = await collection.count_documents({})
+                            print(f"   📊 {collection_name}: {count} documents")
+                        except Exception as collection_error:
+                            print(f"   ❌ Error counting {collection_name}: {collection_error}")
                 
                 except Exception as e:
                     print(f"❌ MongoDB Connection Test Failed: {e}")
+                    # Log full traceback for detailed debugging
+                    import traceback
+                    traceback.print_exc()
             
             # Run connection test
             self.bot.loop.create_task(test_connection())
         
         except Exception as e:
-            print(f"Unexpected MongoDB Connection Error: {e}")
+            print(f"🚨 Unexpected MongoDB Connection Error: {e}")
             
             # Fallback mechanism
             if hasattr(bot, 'api'):
@@ -144,6 +193,10 @@ class ClaimThread(commands.Cog):
                     print("✅ Fallback to bot's shared API successful")
                 except Exception as fallback_error:
                     print(f"❌ Fallback to bot's shared API failed: {fallback_error}")
+                    # Optional: Create in-memory fallback collections
+                    self.ticket_claims_collection = {}
+                    self.ticket_stats_collection = {}
+                    self.config_collection = {}
             
         # Initialize necessary attributes
         self.check_message_cache = {}
