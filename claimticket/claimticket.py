@@ -78,6 +78,20 @@ async def check_reply(ctx):
         return True
 
 
+def is_in_thread(ctx):
+    """
+    Check if the command is being used in a thread channel
+    
+    Args:
+        ctx: The command context
+    
+    Returns:
+        bool: True if in a thread, False otherwise
+    """
+    # Check if the channel is a thread
+    return isinstance(ctx.channel, discord.Thread)
+
+
 class ClaimThread(commands.Cog):
     """Allows supporters to claim thread by sending claim in the thread channel"""
     async def initialize_mongodb(self):
