@@ -78,7 +78,7 @@ async def check_reply(ctx):
         return True
 
 
-def is_in_thread(ctx):
+async def is_in_thread(ctx):
     """
     Check if the command is being used in a thread channel
     
@@ -89,7 +89,12 @@ def is_in_thread(ctx):
         bool: True if in a thread, False otherwise
     """
     # Check if the channel is a thread
-    return isinstance(ctx.channel, discord.Thread)
+    is_thread = isinstance(ctx.channel, discord.Thread)
+    
+    if not is_thread:
+        await ctx.send("❌ This command can only be used in a thread.")
+    
+    return is_thread
 
 
 class ClaimThread(commands.Cog):
