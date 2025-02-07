@@ -825,6 +825,75 @@ class ClaimThread(commands.Cog):
         # Timeout reached without confirmation
         return False
 
+    @commands.command(name="tickets")
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    async def user_tickets(self, ctx, user: discord.User = None, days: int = 30):
+        """
+        Show closed tickets for a user within specified days
+        
+        Usage:
+        !tickets [user] [days]
+        Default is the command invoker and last 30 days
+        """
+        # Use command invoker if no user specified
+        target_user = user or ctx.author
+        
+        # Validate days input
+        days = max(1, min(days, 365))  # Limit between 1 and 365 days
+        
+        # Calculate cutoff date
+        cutoff_date = datetime.utcnow() - timedelta(days=days)
+        
+        # Query closed tickets for the user
+        closed_tickets = await self.ticket_stats_collection.find({
+            'moderator_id': str(target_user.id),
+            'current_state': 'closed',
+            'closed_at': {'$gte': cutoff_date}
+        }).to_list(length=None)
+        
+        # Create an embed to display ticket information
+        embed = discord.Embed(
+            title="🎫 Closed Tickets Summary",
+            color=self.bot.main_color
+        )
+        
+        # Add user information
+        embed.description = (
+            f"{target_user.mention} has closed **{len(closed_tickets)}** tickets "
+            f"in the last **{days}** days."
+        )
+        
+        # Optional: Add more details if tickets exist
+        if closed_tickets:
+            # Sort tickets by closure date (most recent first)
+            sorted_tickets = sorted(
+                closed_tickets, 
+                key=lambda x: x.get('closed_at', datetime.min), 
+                reverse=True
+            )
+            
+            # Add first few ticket details
+            ticket_details = []
+            for ticket in sorted_tickets[:5]:  # Limit to 5 most recent
+                channel_id = ticket.get('channel_id', 'Unknown')
+                closed_at = ticket.get('closed_at', datetime.utcnow())
+                
+                # Format closure time
+                time_diff = (datetime.utcnow() - closed_at).days
+                ticket_details.append(
+                    f"• Channel ID: `{channel_id}` (Closed {time_diff} days ago)"
+                )
+            
+            if ticket_details:
+                embed.add_field(
+                    name="Recent Ticket Details",
+                    value="\n".join(ticket_details),
+                    inline=False
+                )
+        
+        # Send the embed
+        await ctx.send(embed=embed)
+
 async def setup(bot):
     """
     Asynchronous setup function for the plugin
