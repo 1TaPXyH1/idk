@@ -780,7 +780,7 @@ class ClaimThread(commands.Cog):
                 await ctx.send("No ticket stats available.")
 
     @commands.Cog.listener()
-    async def on_thread_close(self, thread, closer):
+    async def on_thread_close(self, thread, closer, *args, **kwargs):
         """
         Handle thread closure and clean up ticket claims
         
