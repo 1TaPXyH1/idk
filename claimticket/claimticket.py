@@ -165,14 +165,10 @@ class ClaimThread(commands.Cog):
         self.bot.loop.create_task(self.initialize_mongodb())
         
         # Initialize necessary attributes
-        self.check_message_cache = {}
         self.default_config = {
             'claim_limit': 5,  # Default claim limit
             'override_roles': []  # Default override roles
         }
-        
-        # Optional: Fallback for pandas-dependent methods
-        self.pandas_available = PANDAS_AVAILABLE
         
         # Ticket export webhook (optional)
         self.ticket_export_webhook = None
