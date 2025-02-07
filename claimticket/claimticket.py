@@ -174,14 +174,14 @@ class ClaimThread(commands.Cog):
 
     async def background_channel_check(self):
         """
-        Periodic background task to verify channel existence and update status
-        Runs every 5 minutes to check active tickets
+        Periodic background task to verify channel existence
+        Checks every 5 seconds for open channels
         """
         await self.bot.wait_until_ready()
         
         while not self.bot.is_closed():
             try:
-                # Find all tickets not explicitly marked as closed
+                # Find all active tickets
                 active_tickets = await self.ticket_stats_collection.find({
                     'current_state': {'$ne': 'closed'}
                 }).to_list(length=None)
@@ -190,33 +190,34 @@ class ClaimThread(commands.Cog):
                     try:
                         channel_id = int(ticket['thread_id'])
                         guild_id = int(ticket.get('guild_id', 0))
+                        last_user_id = ticket.get('last_user_id')
                         
                         # Find the guild
                         guild = self.bot.get_guild(guild_id)
                         if not guild:
-                            # If guild not found, mark as closed
-                            await self.on_thread_state_change(
-                                SimpleNamespace(id=channel_id, guild=None), 
-                                'closed'
-                            )
                             continue
                         
                         # Get the channel
                         channel = guild.get_channel(channel_id)
                         
-                        # Check channel existence and status
+                        # Check channel existence
                         if channel is None:
-                            # Channel deleted, mark as closed
+                            # Channel deleted, notify last claimer
+                            if last_user_id:
+                                try:
+                                    user = await self.bot.fetch_user(int(last_user_id))
+                                    await user.send(f"⚠️ The support ticket channel (ID: {channel_id}) has been deleted.")
+                                except Exception as dm_error:
+                                    print(f"❌ Could not send DM: {dm_error}")
+                            
+                            # Mark as closed
                             await self.on_thread_state_change(
                                 SimpleNamespace(id=channel_id, guild=guild), 
                                 'closed'
                             )
-                        elif channel.name.lower().startswith('closed-'):
-                            # Channel name indicates it's closed
-                            await self.on_thread_state_change(
-                                channel, 
-                                'closed'
-                            )
+                        
+                        # Optional: Add additional checks if needed
+                        # For example, check if channel is archived or has specific properties
                     
                     except Exception as ticket_error:
                         print(f"⚠️ Error checking ticket {ticket.get('thread_id', 'unknown')}: {ticket_error}")
@@ -224,8 +225,8 @@ class ClaimThread(commands.Cog):
             except Exception as e:
                 print(f"❌ Background channel check failed: {e}")
             
-            # Wait for 5 minutes between checks
-            await asyncio.sleep(300)  # 5 minutes
+            # Wait for 5 seconds between checks
+            await asyncio.sleep(5)
 
     async def get_config(self):
         """
