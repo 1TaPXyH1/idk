@@ -1334,6 +1334,93 @@ class ClaimThread(commands.Cog):
             import traceback
             traceback.print_exc()
 
+    async def check_reply(self, ctx):
+        """
+        Comprehensive debugging method for reply checks
+        
+        Diagnoses issues with thread claims and reply permissions
+        """
+        try:
+            print("🔍 Debugging check_reply:")
+            print(f"  Context: {ctx}")
+            print(f"  Command: {ctx.command}")
+            print(f"  Channel: {ctx.channel}")
+            print(f"  Author: {ctx.author}")
+            
+            # Check if thread attribute exists
+            if not hasattr(ctx, 'thread'):
+                print("❌ No thread attribute found")
+                return True
+            
+            # Get the cog
+            cog = ctx.bot.get_cog('ClaimThread')
+            if not cog:
+                print("❌ ClaimThread cog not found")
+                return True
+            
+            # Debug cog attributes
+            print("🔍 Cog Attributes:")
+            cog_attrs = [
+                'ticket_claims_collection', 
+                'ticket_stats_collection', 
+                'mongo_client', 
+                'mongo_db', 
+                'check_message_cache'
+            ]
+            for attr in cog_attrs:
+                if hasattr(cog, attr):
+                    print(f"  ✅ {attr} exists")
+                else:
+                    print(f"  ❌ {attr} does not exist")
+            
+            # Check for collections and database
+            try:
+                # Attempt to access collections
+                if hasattr(cog, 'ticket_claims_collection'):
+                    claims_count = await cog.ticket_claims_collection.count_documents({})
+                    print(f"📊 Ticket Claims Collection:")
+                    print(f"  Total Documents: {claims_count}")
+            
+                if hasattr(cog, 'ticket_stats_collection'):
+                    stats_count = await cog.ticket_stats_collection.count_documents({})
+                    print(f"📊 Ticket Stats Collection:")
+                    print(f"  Total Documents: {stats_count}")
+        
+            except Exception as collection_error:
+                print(f"❌ Error accessing collections: {collection_error}")
+            
+            # Check message cache
+            if hasattr(cog, 'check_message_cache'):
+                print("📋 Message Cache:")
+                for channel_id, timestamp in cog.check_message_cache.items():
+                    print(f"  Channel {channel_id}: {timestamp}")
+            
+            # Attempt to find claim
+            try:
+                # Use getattr with a fallback to prevent AttributeError
+                claims_collection = getattr(cog, 'ticket_claims_collection', None)
+                
+                if claims_collection:
+                    claim = await claims_collection.find_one({
+                        'thread_id': str(ctx.channel.id)
+                    })
+                    print(f"🔍 Claim found: {claim}")
+                else:
+                    print("❌ No claims collection available")
+        
+            except Exception as claim_error:
+                print(f"❌ Error finding claim: {claim_error}")
+                import traceback
+                traceback.print_exc()
+        
+            return True
+        
+        except Exception as e:
+            print(f"❌ Comprehensive Error in check_reply: {e}")
+            import traceback
+            traceback.print_exc()
+            return True
+
 # Removed check_reply function to resolve MongoDB collection errors
 # This function was causing issues with collection method calls
 
