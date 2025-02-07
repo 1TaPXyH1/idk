@@ -169,22 +169,19 @@ class ClaimThread(commands.Cog):
         # Ticket export webhook (optional)
         self.ticket_export_webhook = None
 
-        # Start background ticket state verification
-        self.bot.loop.create_task(self.background_ticket_state_check())
+        # Start background channel verification
+        self.bot.loop.create_task(self.background_channel_check())
 
-        # Start background thread existence verification
-        self.bot.loop.create_task(self.background_thread_existence_check())
-
-    async def background_thread_existence_check(self):
+    async def background_channel_check(self):
         """
         Periodic background task to verify channel existence and update status
-        Runs every 5 seconds to check active tickets
+        Runs every 5 minutes to check active tickets
         """
         await self.bot.wait_until_ready()
         
         while not self.bot.is_closed():
             try:
-                # Find all non-closed tickets
+                # Find all tickets not explicitly marked as closed
                 active_tickets = await self.ticket_stats_collection.find({
                     'current_state': {'$ne': 'closed'}
                 }).to_list(length=None)
@@ -197,63 +194,6 @@ class ClaimThread(commands.Cog):
                         # Find the guild
                         guild = self.bot.get_guild(guild_id)
                         if not guild:
-                            # If guild not found, skip this ticket
-                            continue
-                        
-                        # Try to fetch the channel
-                        try:
-                            # Attempt to fetch the channel
-                            channel = await guild.fetch_channel(channel_id)
-                            
-                            # If we can fetch the channel, it still exists
-                            # No need to do anything
-                            continue
-                        
-                        except discord.NotFound:
-                            # Channel completely deleted
-                            await self.on_thread_state_change(
-                                SimpleNamespace(id=channel_id, guild=guild), 
-                                'closed'
-                            )
-                        
-                        except Exception as fetch_error:
-                            print(f"⚠️ Error fetching channel {channel_id}: {fetch_error}")
-                            continue
-                    
-                    except Exception as ticket_error:
-                        print(f"⚠️ Error processing ticket {ticket.get('thread_id', 'unknown')}: {ticket_error}")
-            
-            except Exception as e:
-                print(f"❌ Background channel existence check failed: {e}")
-            
-            # Wait for 5 seconds before next check
-            await asyncio.sleep(5)
-
-    async def background_ticket_state_check(self):
-        """
-        Periodic background task to verify and update ticket states
-        """
-        await self.bot.wait_until_ready()
-        
-        while not self.bot.is_closed():
-            try:
-                # Find all tickets not marked as closed
-                open_tickets = await self.ticket_stats_collection.find({
-                    '$or': [
-                        {'current_state': {'$ne': 'closed'}},
-                        {'is_closed': False}
-                    ]
-                }).to_list(length=None)
-                
-                for ticket in open_tickets:
-                    try:
-                        # Attempt to fetch the channel
-                        channel_id = int(ticket['thread_id'])
-                        guild_id = int(ticket.get('guild_id', 0))
-                        
-                        # Find the guild and channel
-                        guild = self.bot.get_guild(guild_id)
-                        if not guild:
                             # If guild not found, mark as closed
                             await self.on_thread_state_change(
                                 SimpleNamespace(id=channel_id, guild=None), 
@@ -261,13 +201,20 @@ class ClaimThread(commands.Cog):
                             )
                             continue
                         
+                        # Get the channel
                         channel = guild.get_channel(channel_id)
                         
-                        # Check channel state
-                        if channel is None or channel.name.lower().startswith('closed-'):
-                            # Dispatch closed state if channel is not found or closed
+                        # Check channel existence and status
+                        if channel is None:
+                            # Channel deleted, mark as closed
                             await self.on_thread_state_change(
-                                channel or SimpleNamespace(id=channel_id, guild=guild), 
+                                SimpleNamespace(id=channel_id, guild=guild), 
+                                'closed'
+                            )
+                        elif channel.name.lower().startswith('closed-'):
+                            # Channel name indicates it's closed
+                            await self.on_thread_state_change(
+                                channel, 
                                 'closed'
                             )
                     
@@ -275,10 +222,10 @@ class ClaimThread(commands.Cog):
                         print(f"⚠️ Error checking ticket {ticket.get('thread_id', 'unknown')}: {ticket_error}")
             
             except Exception as e:
-                print(f"❌ Background ticket state check failed: {e}")
+                print(f"❌ Background channel check failed: {e}")
             
-            # Wait before next check (15 minutes)
-            await asyncio.sleep(900)  # 15 minutes instead of 1 hour
+            # Wait for 5 minutes between checks
+            await asyncio.sleep(300)  # 5 minutes
 
     async def get_config(self):
         """
@@ -585,11 +532,16 @@ class ClaimThread(commands.Cog):
                     try:
                         # Attempt to fetch the thread to verify its existence
                         await thread.guild.fetch_channel(thread.id)
+                        # If we can fetch the channel, it's not closed
+                        is_closed = False
                     except discord.NotFound:
                         # Thread no longer exists, mark as closed
                         is_closed = True
                     except Exception as fetch_error:
                         print(f"⚠️ Error fetching thread: {fetch_error}")
+                        is_closed = False
+                else:
+                    is_closed = True
             except Exception as status_error:
                 print(f"⚠️ Error checking thread status: {status_error}")
                 is_closed = False
