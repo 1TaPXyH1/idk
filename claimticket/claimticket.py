@@ -98,6 +98,9 @@ async def is_in_thread(ctx):
 class ClaimThread(commands.Cog):
     """Allows supporters to claim thread by sending claim in the thread channel"""
     async def initialize_mongodb(self):
+        """
+        Initialize MongoDB connection and collections
+        """
         try:
             # Create Motor client for direct MongoDB access with robust connection settings
             self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(
@@ -114,12 +117,17 @@ class ClaimThread(commands.Cog):
             # Select database
             self.mongo_db = self.mongo_client[self.mongo_db_name]
             
+            # Initialize specific collections
+            self.ticket_claims_collection = self.mongo_db['ticket_claims']
+            self.ticket_stats_collection = self.mongo_db['ticket_stats']
+            self.config_collection = self.mongo_db['plugin_configs']
+            
             # Create collections with validation
             collection_names = await self.mongo_db.list_collection_names()
             collections_to_create = {
-                'ticket_claims': {'count_key': 'ticket_claims', 'description': 'Ticket Claims'},
-                'ticket_stats': {'count_key': 'ticket_stats', 'description': 'Ticket Statistics'},
-                'plugin_configs': {'count_key': 'plugin_configs', 'description': 'Plugin Configurations'}
+                'ticket_claims': {'description': 'Ticket Claims'},
+                'ticket_stats': {'description': 'Ticket Statistics'},
+                'plugin_configs': {'description': 'Plugin Configurations'}
             }
                     
             for collection_name, collection_info in collections_to_create.items():
@@ -133,12 +141,6 @@ class ClaimThread(commands.Cog):
                     print(f"ℹ️ {collection_info['description']} Collection already exists: {collection_name}")
                         
             print("✅ Verified Collections")
-            
-            # Initialize collections
-            self.ticket_claims_collection = self.mongo_db['ticket_claims']
-            self.ticket_stats_collection = self.mongo_db['ticket_stats']
-            self.config_collection = self.mongo_db['plugin_configs']
-            
             return True
         
         except Exception as e:
