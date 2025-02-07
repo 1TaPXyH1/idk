@@ -68,9 +68,7 @@ class ClaimThread(commands.Cog):
                 # Configuration collection
                 self.config_collection = self.mongo_db['plugin_configs']
                 
-                print("✅ Verified Collections")
             except Exception as collection_error:
-                print(f"❌ Collection Initialization Error: {collection_error}")
                 # Ensure collections exist even if initialization fails
                 self.ticket_stats_collection = self.mongo_db['ticket_stats']
                 self.config_collection = self.mongo_db['plugin_configs']
@@ -83,12 +81,8 @@ class ClaimThread(commands.Cog):
                     'claim_limit': 5,
                     'override_roles': []
                 })
-                print("ℹ️ Created initial plugin configuration")
-            else:
-                print("ℹ️ Plugin Configurations Collection already exists: plugin_configs")
         
         except Exception as e:
-            print(f"❌ MongoDB Initialization Error: {e}")
             import traceback
             traceback.print_exc()
 
@@ -99,8 +93,6 @@ class ClaimThread(commands.Cog):
         self.check_message_cache = {}
         
         # Comprehensive environment variable logging
-        print("🔍 Initializing MongoDB Connection")
-        print("Environment Variables:")
         mongodb_env_vars = [
             'MONGODB_URI', 'MONGODB_DATABASE', 'MONGODB_USERNAME', 
             'MONGODB_PASSWORD', 'MONGODB_CLUSTER_URL', 'MONGODB_OPTIONS'
@@ -143,19 +135,13 @@ class ClaimThread(commands.Cog):
         try:
             from urllib.parse import urlparse
             parsed_uri = urlparse(self.mongo_uri)
-            print(f"🌐 Parsed MongoDB URI:")
-            print(f"  Scheme: {parsed_uri.scheme}")
-            print(f"  Hostname: {parsed_uri.hostname}")
-            print(f"  Path: {parsed_uri.path}")
             
             # Additional validation
             if not parsed_uri.hostname:
                 raise ValueError("Invalid MongoDB hostname")
         except Exception as uri_parse_error:
-            print(f"❌ URI Parsing Error: {uri_parse_error}")
             # Force fallback URI if parsing fails
             self.mongo_uri = f"mongodb+srv://{FALLBACK_MONGODB_USERNAME}:{FALLBACK_MONGODB_PASSWORD}@{FALLBACK_MONGODB_CLUSTER_URL}/?{FALLBACK_MONGODB_OPTIONS}"
-            print(f"⚠️ Forced Fallback URI: {self.mongo_uri}")
         
         # Schedule MongoDB initialization
         self.bot.loop.create_task(self.initialize_mongodb())
@@ -188,9 +174,8 @@ class ClaimThread(commands.Cog):
                 
                 for ticket in active_tickets:
                     try:
-                        channel_id = int(ticket['thread_id'])
+                        channel_id = int(ticket['channel_id'])
                         guild_id = int(ticket.get('guild_id', 0))
-                        last_user_id = ticket.get('last_user_id')
                         
                         # Find the guild
                         guild = self.bot.get_guild(guild_id)
@@ -203,27 +188,26 @@ class ClaimThread(commands.Cog):
                         # Check channel existence
                         if channel is None:
                             # Channel deleted, notify last claimer
-                            if last_user_id:
+                            if ticket.get('moderator_id'):
                                 try:
-                                    user = await self.bot.fetch_user(int(last_user_id))
+                                    user = await self.bot.fetch_user(int(ticket['moderator_id']))
                                     await user.send(f"⚠️ The support ticket channel (ID: {channel_id}) has been deleted.")
-                                except Exception as dm_error:
-                                    print(f"❌ Could not send DM: {dm_error}")
+                                except:
+                                    pass
                             
                             # Mark as closed
                             await self.on_thread_state_change(
                                 SimpleNamespace(id=channel_id, guild=guild), 
                                 'closed'
                             )
-                        
-                        # Optional: Add additional checks if needed
-                        # For example, check if channel is archived or has specific properties
                     
-                    except Exception as ticket_error:
-                        print(f"⚠️ Error checking ticket {ticket.get('thread_id', 'unknown')}: {ticket_error}")
+                    except Exception:
+                        # Silently handle any ticket processing errors
+                        pass
             
-            except Exception as e:
-                print(f"❌ Background channel check failed: {e}")
+            except Exception:
+                # Silently handle any background check errors
+                pass
             
             # Wait for 5 seconds between checks
             await asyncio.sleep(5)
@@ -512,14 +496,8 @@ class ClaimThread(commands.Cog):
             closer: The user who performed the action (can be None)
         """
         try:
-            # Extensive logging for debugging
-            print("🔍 Attempting to update ticket stats:")
-            print(f"  Thread: {thread}")
-            print(f"  Closer: {closer}")
-            
             # Check thread status and existence
             if thread is None:
-                print("❌ Thread is None, cannot log stats")
                 return
             
             # Determine thread status and lifecycle
@@ -538,13 +516,12 @@ class ClaimThread(commands.Cog):
                     except discord.NotFound:
                         # Thread no longer exists, mark as closed
                         is_closed = True
-                    except Exception as fetch_error:
-                        print(f"⚠️ Error fetching thread: {fetch_error}")
+                    except Exception:
+                        # Silently handle other exceptions
                         is_closed = False
                 else:
                     is_closed = True
-            except Exception as status_error:
-                print(f"⚠️ Error checking thread status: {status_error}")
+            except Exception:
                 is_closed = False
             
             thread_id = str(thread.id)
@@ -552,63 +529,39 @@ class ClaimThread(commands.Cog):
             
             # Prepare stats document
             stats_doc = {
-                'thread_id': thread_id,
+                'channel_id': thread_id,
                 'guild_id': guild_id,
                 'created_at': thread.created_at,
-                'status': 'closed' if is_closed else 'open',
-                'lifecycle': {
-                    'created': True,
-                    'closed': is_closed
-                }
+                'moderator_id': str(closer.id) if closer else None,
+                'current_state': 'closed' if is_closed else 'open',
+                'closed_at': datetime.utcnow() if is_closed else None
             }
-            
-            # Handle moderator information
-            if closer:
-                stats_doc['moderator_id'] = str(closer.id)
-            else:
-                # If no closer provided, use null/None
-                stats_doc['moderator_id'] = None
-            
-            # Add closure timestamp if closed
-            if is_closed:
-                stats_doc['closed_at'] = datetime.utcnow()
-            else:
-                stats_doc['closed_at'] = None
-            
-            # Log document details
-            print("📋 Stats Document:")
-            for key, value in stats_doc.items():
-                print(f"  {key}: {value}")
             
             # Insert or update stats document
             try:
                 # Try to find existing document for this thread
                 existing_doc = await self.ticket_stats_collection.find_one({
-                    'thread_id': thread_id,
+                    'channel_id': thread_id,
                     'guild_id': guild_id
                 })
                 
                 if existing_doc:
                     # Update existing document
-                    update_result = await self.ticket_stats_collection.update_one(
+                    await self.ticket_stats_collection.update_one(
                         {'_id': existing_doc['_id']},
                         {'$set': stats_doc}
                     )
-                    print(f"✅ Updated existing ticket stats: {update_result.modified_count} document(s)")
                 else:
                     # Insert new document
-                    result = await self.ticket_stats_collection.insert_one(stats_doc)
-                    print(f"✅ Inserted new ticket stats. Inserted ID: {result.inserted_id}")
+                    await self.ticket_stats_collection.insert_one(stats_doc)
             
-            except Exception as insert_error:
-                print(f"❌ MongoDB Insertion/Update Error: {insert_error}")
-                import traceback
-                traceback.print_exc()
+            except Exception:
+                # Silently handle any unexpected errors
+                pass
         
-        except Exception as e:
-            print(f"❌ Comprehensive Error in update_ticket_stats: {e}")
-            import traceback
-            traceback.print_exc()
+        except Exception:
+            # Silently handle any unexpected errors
+            pass
 
     @commands.command(name="claim")
     @commands.check(is_in_thread)
@@ -667,7 +620,6 @@ class ClaimThread(commands.Cog):
         
         except Exception as e:
             await ctx.send(f"Error claiming thread: {e}")
-            print(f"Claim thread error: {e}")
 
     async def count_active_claims(self, user_id):
         """
@@ -683,8 +635,8 @@ class ClaimThread(commands.Cog):
                 'current_state': {'$ne': 'closed'}
             })
             return active_claims
-        except Exception as e:
-            print(f"❌ Error counting active claims: {e}")
+        except Exception:
+            # Silently handle any unexpected errors
             return 0
 
     @commands.command(name="thread_unclaim")
@@ -699,7 +651,6 @@ class ClaimThread(commands.Cog):
         
         except Exception as e:
             await ctx.send(f"Error unclaiming thread: {e}")
-            print(f"Unclaim thread error: {e}")
 
     @commands.command(name="set_claim_limit")
     @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
@@ -745,39 +696,32 @@ class ClaimThread(commands.Cog):
                     except discord.NotFound:
                         # Thread no longer exists, mark as closed
                         is_closed = True
-                    except Exception as fetch_error:
-                        print(f"⚠️ Error checking channel existence: {fetch_error}")
+                    except Exception:
+                        # Silently handle other exceptions
                         is_closed = False
                 else:
                     is_closed = True
-            except Exception as e:
-                print(f"⚠️ Additional channel existence check error: {e}")
+            except Exception:
                 is_closed = False
             
             # Retrieve existing ticket data to preserve last user and moderator IDs
             existing_ticket = await self.ticket_stats_collection.find_one({
-                'thread_id': str(thread.id) if thread else 'unknown'
+                'channel_id': str(thread.id) if thread else 'unknown'
             })
             
-            # Prepare minimal stats document
+            # Prepare minimal stats document following specified format
             stats_doc = {
-                'thread_id': str(thread.id) if thread else 'unknown',
+                'channel_id': str(thread.id) if thread else 'unknown',
                 'guild_id': str(thread.guild.id) if thread and thread.guild else 'unknown',
                 'current_state': state,
-                'status': 'closed' if is_closed else 'open',
-                'is_closed': is_closed,
             }
             
-            # Preserve existing last_user_id and moderator_id if they exist
-            if existing_ticket:
-                if existing_ticket.get('last_user_id'):
-                    stats_doc['last_user_id'] = existing_ticket['last_user_id']
-                if existing_ticket.get('moderator_id'):
-                    stats_doc['moderator_id'] = existing_ticket['moderator_id']
+            # Preserve existing moderator_id if it exists
+            if existing_ticket and existing_ticket.get('moderator_id'):
+                stats_doc['moderator_id'] = existing_ticket['moderator_id']
             
-            # Add new user information if provided and state is not closed
+            # Add new moderator information if provided and state is not closed
             if user and state != 'closed':
-                stats_doc['last_user_id'] = str(user.id)
                 stats_doc['moderator_id'] = str(user.id)
             
             # Add closure timestamp if closed
@@ -785,19 +729,15 @@ class ClaimThread(commands.Cog):
                 stats_doc['closed_at'] = datetime.utcnow()
             
             # Upsert ticket stats
-            result = await self.ticket_stats_collection.update_one(
-                {'thread_id': stats_doc['thread_id']},
+            await self.ticket_stats_collection.update_one(
+                {'channel_id': stats_doc['channel_id']},
                 {'$set': stats_doc},
                 upsert=True
             )
-            
-            # Minimal logging
-            print(f"📋 Ticket State: {stats_doc['thread_id']} -> {state} (Closed: {is_closed})")
-            
-        except Exception as e:
-            print(f"❌ Error tracking ticket state: {e}")
-            import traceback
-            traceback.print_exc()
+        
+        except Exception:
+            # Silently handle any unexpected errors
+            pass
 
     async def verify_thread_closure(self, thread_id, timeout=300):
         """
@@ -835,8 +775,8 @@ class ClaimThread(commands.Cog):
                 # Wait before next check
                 await asyncio.sleep(10)  # Check every 10 seconds
             
-            except Exception as e:
-                print(f"❌ Closure verification error: {e}")
+            except Exception:
+                # Silently handle any unexpected errors
                 return False
         
         # Timeout reached without confirmation
