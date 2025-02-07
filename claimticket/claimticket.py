@@ -590,6 +590,12 @@ class ClaimThread(commands.Cog):
         """
         Claim the current ticket thread
         """
+        # Get the current thread
+        thread = ctx.channel
+
+        # Log ticket stats when claimed
+        await self.update_ticket_stats(thread, ctx.author)
+
         await ctx.send(f"✅ {ctx.author.mention} has acknowledged this ticket.")
 
     @commands.command(name="unclaim")
@@ -598,6 +604,12 @@ class ClaimThread(commands.Cog):
         """
         Unclaim the current ticket thread
         """
+        # Get the current thread
+        thread = ctx.channel
+
+        # Log ticket stats when unclaimed
+        await self.update_ticket_stats(thread, ctx.author)
+
         await ctx.send(f"✅ Ticket status reset.")
 
     @commands.command(name="thread_claim")
