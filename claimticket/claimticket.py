@@ -177,7 +177,7 @@ class ClaimThread(commands.Cog):
 
     async def background_thread_existence_check(self):
         """
-        Periodic background task to verify thread existence and update status
+        Periodic background task to verify channel existence and update status
         Runs every 5 seconds to check active tickets
         """
         await self.bot.wait_until_ready()
@@ -191,7 +191,7 @@ class ClaimThread(commands.Cog):
                 
                 for ticket in active_tickets:
                     try:
-                        thread_id = int(ticket['thread_id'])
+                        channel_id = int(ticket['thread_id'])
                         guild_id = int(ticket.get('guild_id', 0))
                         
                         # Find the guild
@@ -200,42 +200,43 @@ class ClaimThread(commands.Cog):
                             # If guild not found, skip this ticket
                             continue
                         
-                        # Try to fetch the thread channel
+                        # Try to fetch the channel
                         try:
-                            thread = guild.get_thread(thread_id)
+                            channel = guild.get_channel(channel_id)
                             
                             # Perform additional checks
-                            if thread is None:
+                            if channel is None:
                                 # Attempt to fetch the channel to confirm complete deletion
                                 try:
-                                    await guild.fetch_channel(thread_id)
-                                    # Channel still exists but not a thread
+                                    await guild.fetch_channel(channel_id)
+                                    # Channel still exists
                                     continue
                                 except discord.NotFound:
                                     # Channel completely deleted
                                     await self.on_thread_state_change(
-                                        SimpleNamespace(id=thread_id, guild=guild), 
+                                        SimpleNamespace(id=channel_id, guild=guild), 
                                         'closed'
                                     )
                                 except Exception as fetch_error:
-                                    print(f"⚠️ Error fetching channel {thread_id}: {fetch_error}")
+                                    print(f"⚠️ Error fetching channel {channel_id}: {fetch_error}")
                                     continue
                             
-                            # Check if thread is actually closed
-                            if thread.closed:
+                            # Additional checks for channel status
+                            # You might want to add more specific checks based on your support bot's channel management
+                            if channel.name.lower().startswith('closed-'):
                                 await self.on_thread_state_change(
-                                    thread, 
+                                    channel, 
                                     'closed'
                                 )
                         
-                        except Exception as thread_error:
-                            print(f"⚠️ Error checking thread {thread_id}: {thread_error}")
+                        except Exception as channel_error:
+                            print(f"⚠️ Error checking channel {channel_id}: {channel_error}")
                     
                     except Exception as ticket_error:
                         print(f"⚠️ Error processing ticket {ticket.get('thread_id', 'unknown')}: {ticket_error}")
             
             except Exception as e:
-                print(f"❌ Background thread existence check failed: {e}")
+                print(f"❌ Background channel existence check failed: {e}")
             
             # Wait for 5 seconds before next check
             await asyncio.sleep(5)
@@ -258,27 +259,27 @@ class ClaimThread(commands.Cog):
                 
                 for ticket in open_tickets:
                     try:
-                        # Attempt to fetch the thread
-                        thread_id = int(ticket['thread_id'])
+                        # Attempt to fetch the channel
+                        channel_id = int(ticket['thread_id'])
                         guild_id = int(ticket.get('guild_id', 0))
                         
-                        # Find the guild and thread
+                        # Find the guild and channel
                         guild = self.bot.get_guild(guild_id)
                         if not guild:
                             # If guild not found, mark as closed
                             await self.on_thread_state_change(
-                                SimpleNamespace(id=thread_id, guild=None), 
+                                SimpleNamespace(id=channel_id, guild=None), 
                                 'closed'
                             )
                             continue
                         
-                        thread = guild.get_thread(thread_id)
+                        channel = guild.get_channel(channel_id)
                         
-                        # Check thread state
-                        if thread is None or thread.closed:
-                            # Dispatch closed state if thread is not found or closed
+                        # Check channel state
+                        if channel is None or channel.name.lower().startswith('closed-'):
+                            # Dispatch closed state if channel is not found or closed
                             await self.on_thread_state_change(
-                                thread or SimpleNamespace(id=thread_id, guild=guild), 
+                                channel or SimpleNamespace(id=channel_id, guild=guild), 
                                 'closed'
                             )
                     
@@ -784,33 +785,40 @@ class ClaimThread(commands.Cog):
         Centralized event listener for ticket state changes
         
         Args:
-            thread: The Discord thread
+            thread: The Discord channel/thread
             state: New state of the ticket ('claimed', 'unclaimed', 'closed')
             user: User who triggered the state change (optional)
         """
         try:
-            # Determine if thread exists and is closed
+            # Determine if channel exists and is closed
             is_closed = state == 'closed'
             
-            # Check thread existence and status
+            # Check channel existence and status
             try:
                 if thread and hasattr(thread, 'guild'):
                     # Attempt to fetch the channel to verify existence
-                    channel = await thread.guild.fetch_channel(thread.id)
-                    
-                    # If it's a thread, check its actual status
-                    if isinstance(channel, discord.Thread):
-                        is_closed = channel.closed
-                    else:
-                        # If it's not a thread, consider it closed
+                    try:
+                        channel = await thread.guild.fetch_channel(thread.id)
+                        
+                        # Check if channel is considered closed
+                        # For support bot, this might mean:
+                        # 1. Channel name starts with 'closed-'
+                        # 2. Channel is in a specific 'closed' category
+                        # 3. Channel has been archived or marked as inactive
+                        is_closed = (
+                            channel.name.lower().startswith('closed-') or
+                            (channel.category and 'closed' in channel.category.name.lower())
+                        )
+                    except discord.NotFound:
+                        # Channel completely deleted
                         is_closed = True
+                    except Exception as fetch_error:
+                        print(f"⚠️ Error checking channel existence: {fetch_error}")
+                        is_closed = False
                 else:
                     is_closed = True
-            except discord.NotFound:
-                # Channel completely deleted
-                is_closed = True
-            except Exception as fetch_error:
-                print(f"⚠️ Error checking thread existence: {fetch_error}")
+            except Exception as e:
+                print(f"⚠️ Additional channel existence check error: {e}")
                 is_closed = False
             
             # Prepare minimal stats document
