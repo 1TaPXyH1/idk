@@ -202,35 +202,23 @@ class ClaimThread(commands.Cog):
                         
                         # Try to fetch the channel
                         try:
-                            channel = guild.get_channel(channel_id)
+                            # Attempt to fetch the channel
+                            channel = await guild.fetch_channel(channel_id)
                             
-                            # Perform additional checks
-                            if channel is None:
-                                # Attempt to fetch the channel to confirm complete deletion
-                                try:
-                                    await guild.fetch_channel(channel_id)
-                                    # Channel still exists
-                                    continue
-                                except discord.NotFound:
-                                    # Channel completely deleted
-                                    await self.on_thread_state_change(
-                                        SimpleNamespace(id=channel_id, guild=guild), 
-                                        'closed'
-                                    )
-                                except Exception as fetch_error:
-                                    print(f"⚠️ Error fetching channel {channel_id}: {fetch_error}")
-                                    continue
-                            
-                            # Additional checks for channel status
-                            # You might want to add more specific checks based on your support bot's channel management
-                            if channel.name.lower().startswith('closed-'):
-                                await self.on_thread_state_change(
-                                    channel, 
-                                    'closed'
-                                )
+                            # If we can fetch the channel, it still exists
+                            # No need to do anything
+                            continue
                         
-                        except Exception as channel_error:
-                            print(f"⚠️ Error checking channel {channel_id}: {channel_error}")
+                        except discord.NotFound:
+                            # Channel completely deleted
+                            await self.on_thread_state_change(
+                                SimpleNamespace(id=channel_id, guild=guild), 
+                                'closed'
+                            )
+                        
+                        except Exception as fetch_error:
+                            print(f"⚠️ Error fetching channel {channel_id}: {fetch_error}")
+                            continue
                     
                     except Exception as ticket_error:
                         print(f"⚠️ Error processing ticket {ticket.get('thread_id', 'unknown')}: {ticket_error}")
@@ -793,22 +781,14 @@ class ClaimThread(commands.Cog):
             # Determine if channel exists and is closed
             is_closed = state == 'closed'
             
-            # Check channel existence and status
+            # Check channel existence
             try:
                 if thread and hasattr(thread, 'guild'):
-                    # Attempt to fetch the channel to verify existence
                     try:
-                        channel = await thread.guild.fetch_channel(thread.id)
-                        
-                        # Check if channel is considered closed
-                        # For support bot, this might mean:
-                        # 1. Channel name starts with 'closed-'
-                        # 2. Channel is in a specific 'closed' category
-                        # 3. Channel has been archived or marked as inactive
-                        is_closed = (
-                            channel.name.lower().startswith('closed-') or
-                            (channel.category and 'closed' in channel.category.name.lower())
-                        )
+                        # Attempt to fetch the channel to verify existence
+                        await thread.guild.fetch_channel(thread.id)
+                        # If we can fetch the channel, it's not closed
+                        is_closed = False
                     except discord.NotFound:
                         # Channel completely deleted
                         is_closed = True
