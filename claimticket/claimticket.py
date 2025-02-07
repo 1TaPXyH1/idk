@@ -513,11 +513,11 @@ class ClaimThread(commands.Cog):
 
     async def update_ticket_stats(self, thread, closer):
         """
-        Update ticket statistics when a thread is created or closed
+        Update ticket statistics when a thread is created, claimed, unclaimed, or closed
         
         Args:
             thread: The thread being tracked
-            closer: The user who closed the thread (optional)
+            closer: The user who performed the action (can be None)
         """
         try:
             # Extensive logging for debugging
@@ -539,15 +539,26 @@ class ClaimThread(commands.Cog):
             stats_doc = {
                 'thread_id': thread_id,
                 'guild_id': guild_id,
-                'moderator_id': str(closer.id) if closer else 'unknown',
                 'created_at': thread.created_at,
-                'closed_at': datetime.utcnow() if is_closed else None,
                 'status': 'closed' if is_closed else 'open',
                 'lifecycle': {
                     'created': True,
                     'closed': is_closed
                 }
             }
+            
+            # Handle moderator information
+            if closer:
+                stats_doc['moderator_id'] = str(closer.id)
+            else:
+                # If no closer provided, use null/None
+                stats_doc['moderator_id'] = None
+            
+            # Add closure timestamp if closed
+            if is_closed:
+                stats_doc['closed_at'] = datetime.utcnow()
+            else:
+                stats_doc['closed_at'] = None
             
             # Log document details
             print("📋 Stats Document:")
@@ -607,8 +618,11 @@ class ClaimThread(commands.Cog):
         # Get the current thread
         thread = ctx.channel
 
+        # Check if thread is closed
+        is_thread_closed = thread.closed if hasattr(thread, 'closed') else False
+
         # Log ticket stats when unclaimed
-        await self.update_ticket_stats(thread, ctx.author)
+        await self.update_ticket_stats(thread, None if is_thread_closed else ctx.author)
 
         await ctx.send(f"✅ Ticket status reset.")
 
