@@ -357,11 +357,12 @@ class ClaimThread(commands.Cog):
         })
         return ticket.get('moderator_id') if ticket else None
 
-    @commands.command(name="claim")
+    @commands.command(name="claim", aliases=["c"])
     @commands.check(is_in_thread)
     async def claim_thread(self, ctx):
         """
         Claim the current ticket thread
+        Aliases: .claim, .c
         """
         # Get the current thread
         thread = ctx.channel
@@ -390,6 +391,7 @@ class ClaimThread(commands.Cog):
 
         # Send claim embed
         embed = discord.Embed(
+            title="📋 Ticket Claimed",
             description=f"{ctx.author.mention} claimed the ticket.",
             color=discord.Color.orange()
         )
@@ -434,6 +436,7 @@ class ClaimThread(commands.Cog):
 
         # Send unclaim embed
         embed = discord.Embed(
+            title="🔓 Ticket Unclaimed",
             description=f"{ctx.author.mention} unclaimed the ticket.",
             color=discord.Color.dark_orange()
         )
@@ -448,6 +451,7 @@ class ClaimThread(commands.Cog):
             
             # Send rename embed
             embed = discord.Embed(
+                title="✏️ Channel Renamed",
                 description=f"Channel name changed to `{new_name}`. Please don't use this command too often.",
                 color=discord.Color.gold()
             )
@@ -842,6 +846,52 @@ class ClaimThread(commands.Cog):
         
         # Timeout reached without confirmation
         return False
+
+    @commands.command(name="notify", aliases=["n"])
+    @commands.check(is_in_thread)
+    async def toggle_notifications(self, ctx):
+        """
+        Toggle notifications for the current thread
+        Aliases: .notify, .n
+        """
+        # Get the current thread
+        thread = ctx.channel
+
+        # Ensure thread exists in config
+        if str(thread.id) not in self.bot.config["subscriptions"]:
+            self.bot.config["subscriptions"][str(thread.id)] = []
+
+        # Get current subscriptions for this thread
+        subscriptions = self.bot.config["subscriptions"][str(thread.id)]
+
+        # Check if user is already subscribed
+        if ctx.author.mention in subscriptions:
+            # Unsubscribe
+            subscriptions.remove(ctx.author.mention)
+            
+            # Send unsubscribe embed
+            embed = discord.Embed(
+                title="🔔 Notifications Disabled",
+                description=f"{ctx.author.mention} unsubscribed from the channel. Will no longer receive pings.",
+                color=discord.Color.dark_gold()
+            )
+        else:
+            # Subscribe
+            subscriptions.append(ctx.author.mention)
+            
+            # Send subscribe embed
+            embed = discord.Embed(
+                title="🔔 Notifications Enabled",
+                description=f"{ctx.author.mention} subscribed to the channel. Will now receive pings.",
+                color=discord.Color.gold()
+            )
+
+        # Update config
+        self.bot.config["subscriptions"][str(thread.id)] = subscriptions
+        await self.bot.config.update()
+
+        # Send notification embed
+        await ctx.send(embed=embed)
 
 async def setup(bot):
     """
