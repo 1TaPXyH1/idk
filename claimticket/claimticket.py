@@ -102,6 +102,9 @@ class ClaimThread(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         
+        # Reintroduce check_message_cache with minimal implementation
+        self.check_message_cache = {}
+        
         # Comprehensive environment variable logging
         print("🔍 Initializing MongoDB Connection")
         print("Environment Variables:")
@@ -700,29 +703,51 @@ class ClaimThread(commands.Cog):
             closer: The user who closed the thread
         """
         try:
-            # Ensure thread is closed or no longer exists
-            if thread is None or thread.closed:
-                # Prepare minimal stats document with specified fields
-                stats_doc = {
-                    'thread_id': str(thread.id) if thread else 'unknown',
-                    'guild_id': str(thread.guild.id) if thread and thread.guild else 'unknown',
-                    'moderator_id': str(closer.id) if closer else 'unknown',
-                    'closed_at': datetime.utcnow(),
-                    'status': 'closed'
-                }
-                
-                # Insert stats document
+            # Extensive logging for debugging
+            print("🔍 Attempting to update ticket stats:")
+            print(f"  Thread: {thread}")
+            print(f"  Closer: {closer}")
+            
+            # Check thread status
+            if thread is None:
+                print("❌ Thread is None, cannot log stats")
+                return
+            
+            # Determine thread status
+            is_closed = getattr(thread, 'closed', False)
+            print(f"  Thread Closed Status: {is_closed}")
+            
+            # Prepare stats document
+            stats_doc = {
+                'thread_id': str(thread.id),
+                'guild_id': str(thread.guild.id) if thread.guild else 'unknown',
+                'moderator_id': str(closer.id) if closer else 'unknown',
+                'closed_at': datetime.utcnow(),
+                'status': 'closed' if is_closed else 'active'
+            }
+            
+            # Log document details
+            print("📋 Stats Document:")
+            for key, value in stats_doc.items():
+                print(f"  {key}: {value}")
+            
+            # Insert stats document
+            try:
                 result = await self.ticket_stats_collection.insert_one(stats_doc)
                 
                 if result.inserted_id:
-                    print(f"✅ Ticket stats logged for thread {'ID: ' + str(thread.id) if thread else 'Unknown'}")
+                    print(f"✅ Ticket stats logged successfully")
+                    print(f"  Inserted ID: {result.inserted_id}")
                 else:
                     print("❌ Failed to log ticket stats")
-            else:
-                print("ℹ️ Thread not closed, skipping stats logging")
+            
+            except Exception as insert_error:
+                print(f"❌ MongoDB Insertion Error: {insert_error}")
+                import traceback
+                traceback.print_exc()
         
         except Exception as e:
-            print(f"❌ Error updating ticket stats: {e}")
+            print(f"❌ Comprehensive Error in update_ticket_stats: {e}")
             import traceback
             traceback.print_exc()
 
@@ -1246,6 +1271,52 @@ class ClaimThread(commands.Cog):
             await ctx.send(embed=embed)
             # Re-raise the exception to ensure it's logged
             raise
+
+    async def debug_mongodb_connection(self):
+        """
+        Debug MongoDB connection and collections
+        """
+        try:
+            print("🔍 MongoDB Connection Debug:")
+            
+            # Check MongoDB client
+            if not hasattr(self, 'mongo_client'):
+                print("❌ MongoDB client not initialized")
+                return
+            
+            # Check database
+            if not hasattr(self, 'mongo_db'):
+                print("❌ MongoDB database not initialized")
+                return
+            
+            # List collections
+            try:
+                collection_names = await self.mongo_db.list_collection_names()
+                print("📋 Existing Collections:")
+                for name in collection_names:
+                    print(f"  - {name}")
+            except Exception as list_error:
+                print(f"❌ Error listing collections: {list_error}")
+            
+            # Check ticket_stats collection
+            try:
+                stats_count = await self.ticket_stats_collection.count_documents({})
+                print(f"📊 Ticket Stats Collection:")
+                print(f"  Total Documents: {stats_count}")
+                
+                # Fetch recent documents for debugging
+                recent_stats = await self.ticket_stats_collection.find().sort('closed_at', -1).limit(5).to_list(length=5)
+                print("  Recent Entries:")
+                for stat in recent_stats:
+                    print(f"    - {stat}")
+            
+            except Exception as stats_error:
+                print(f"❌ Error checking ticket stats: {stats_error}")
+        
+        except Exception as e:
+            print(f"❌ Comprehensive MongoDB Debug Error: {e}")
+            import traceback
+            traceback.print_exc()
 
 # Removed check_reply function to resolve MongoDB collection errors
 # This function was causing issues with collection method calls
