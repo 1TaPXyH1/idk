@@ -303,45 +303,53 @@ class ClaimThread(commands.Cog):
         # Check if thread has active claimers
         has_active_claimers = thread and thread.get('claimers') and len(thread['claimers']) > 0
         
-        if not has_active_claimers:
-            try:
-                # Check claim limits
-                if not await self.check_claimer(ctx, ctx.author.id):
-                    await ctx.message.add_reaction('🚫')
-                    return
-
-                # Update database
-                if thread is None:
-                    await self.ticket_stats_collection.insert_one({
-                        'guild': str(self.bot.modmail_guild.id),
-                        'thread_id': str(ctx.thread.channel.id),
-                        'claimers': [str(ctx.author.id)],
-                        'status': 'open'
-                    })
-                else:
-                    await self.ticket_stats_collection.find_one_and_update(
-                        {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)},
-                        {'$set': {'claimers': [str(ctx.author.id)], 'status': 'open'}}
-                    )
-
-                # Delete the claim command message
-                try:
-                    await ctx.message.delete()
-                except:
-                    pass
-
-                # Send claim embed
-                embed = discord.Embed(
-                    title="📋 Ticket Claimed",
-                    description=f"{ctx.author.mention} claimed the ticket.",
-                    color=discord.Color.orange()
-                )
-                await ctx.send(embed=embed)
-            except Exception as e:
-                await ctx.message.add_reaction('❌')
-                print(f"Claim error: {e}")
-        else:
+        # If thread is already claimed and current user is not a claimer
+        if has_active_claimers and (not thread or str(ctx.author.id) not in thread.get('claimers', [])):
+            embed = discord.Embed(
+                description="This thread is already claimed by another user.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed, delete_after=10)
             await ctx.message.add_reaction('🚫')
+            return
+
+        # Proceed with claiming if not already claimed or is current claimer
+        try:
+            # Check claim limits
+            if not await self.check_claimer(ctx, ctx.author.id):
+                await ctx.message.add_reaction('🚫')
+                return
+
+            # Update database
+            if thread is None:
+                await self.ticket_stats_collection.insert_one({
+                    'guild': str(self.bot.modmail_guild.id),
+                    'thread_id': str(ctx.thread.channel.id),
+                    'claimers': [str(ctx.author.id)],
+                    'status': 'open'
+                })
+            else:
+                await self.ticket_stats_collection.find_one_and_update(
+                    {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)},
+                    {'$set': {'claimers': [str(ctx.author.id)], 'status': 'open'}}
+                )
+
+            # Delete the claim command message
+            try:
+                await ctx.message.delete()
+            except:
+                pass
+
+            # Send claim embed
+            embed = discord.Embed(
+                title="📋 Ticket Claimed",
+                description=f"{ctx.author.mention} claimed the ticket.",
+                color=discord.Color.orange()
+            )
+            await ctx.send(embed=embed)
+        except Exception as e:
+            await ctx.message.add_reaction('❌')
+            print(f"Claim error: {e}")
 
     @commands.command(name="unclaim")
     @commands.check(is_in_thread)
@@ -353,7 +361,18 @@ class ClaimThread(commands.Cog):
             'guild': str(self.bot.modmail_guild.id)
         })
         
-        if thread and str(ctx.author.id) in thread['claimers']:
+        # Check if thread is claimed and current user is a claimer or moderator
+        if not thread or not thread.get('claimers'):
+            embed = discord.Embed(
+                description="This thread is not currently claimed.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed, delete_after=10)
+            await ctx.message.add_reaction('🚫')
+            return
+
+        # Only allow unclaim if user is a claimer or moderator
+        if (await self.is_moderator(ctx.author)) or str(ctx.author.id) in thread['claimers']:
             try:
                 # Remove the claimer
                 await self.ticket_stats_collection.find_one_and_update(
@@ -378,6 +397,11 @@ class ClaimThread(commands.Cog):
                 await ctx.message.add_reaction('❌')
                 print(f"Unclaim error: {e}")
         else:
+            embed = discord.Embed(
+                description="You are not authorized to unclaim this thread.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed, delete_after=10)
             await ctx.message.add_reaction('🚫')
 
     @commands.command(name="thread_notify", aliases=["tn", "n"])
@@ -697,7 +721,7 @@ async def check_reply(ctx):
     try:
         cog = ctx.bot.get_cog('ClaimThread')
         
-        # Check if user is a moderator
+        # Check if user is a moderator (full bypass)
         if await cog.is_moderator(ctx.author):
             return True
 
@@ -707,7 +731,7 @@ async def check_reply(ctx):
             'guild': str(ctx.bot.modmail_guild.id)
         })
         
-        # If thread isn't claimed or doesn't exist, allow reply
+        # If thread isn't claimed, allow reply
         if not thread or not thread.get('claimers'):
             return True
         
