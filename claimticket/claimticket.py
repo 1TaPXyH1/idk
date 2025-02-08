@@ -33,17 +33,29 @@ from core.utils import match_user_id
 @commands.check
 async def is_in_thread(ctx):
     """
-    Check if the command is being used in a thread channel
+    Check if the command is being used in a valid thread channel
     
     Args:
         ctx: The command context
     
     Returns:
-        bool: True if in a thread, False otherwise
+        bool: True if in a valid thread, False otherwise
     """
-    # Check if the channel is a thread
+    # Check if channel is a thread
     if not isinstance(ctx.channel, discord.Thread):
-        raise commands.CheckFailure("This command can only be used in a thread.")
+        # Check if it's in the specific category
+        if ctx.channel.category_id == 1334667715444473886:
+            return True
+        
+        # Send an embed for invalid channel
+        embed = discord.Embed(
+            title="❌ Invalid Channel",
+            description="This command can only be used in ModMail threads or the specified category.",
+            color=discord.Color.red()
+        )
+        ctx.bot.loop.create_task(ctx.send(embed=embed))
+        return False
+    
     return True
 
 
@@ -236,18 +248,17 @@ class ClaimThread(commands.Cog):
                                     user = await self.bot.fetch_user(int(ticket['moderator_id']))
                                     stats = await self.get_ticket_closure_stats(ticket['moderator_id'])
                                     
-                                    # Construct personalized message
-                                    message = (
-                                        f"Congrats on closing your {stats['daily_tickets']} ticket of the day! "
-                                        f"This is your {stats['monthly_tickets']} ticket of the month."
-                                    )
-                                    
-                                    await user.send(message)
+                                    # Send DM using new method
+                                    await self.send_closure_dm(ticket['moderator_id'], stats['daily_count'], stats['monthly_count'])
                                     
                                     # Mark this ticket as notified
                                     self.notified_closed_tickets.add(channel_id)
-                                except:
-                                    pass
+                                except Exception as dm_error:
+                                    print(f"Failed to send DM for ticket {ticket.get('_id')}: {dm_error}")
+                                    # Log additional details for debugging
+                                    print(f"Moderator ID: {ticket.get('moderator_id')}")
+                                    print(f"Guild ID: {guild_id}")
+                                    print(f"Channel ID: {channel_id}")
                             
                             # Mark as closed
                             await self.on_thread_state_change(
@@ -364,9 +375,14 @@ class ClaimThread(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message):
         """Listener to send notifications for subscribed threads"""
-        # Ignore bot messages and messages in non-thread channels
-        if message.author.bot or not isinstance(message.channel, discord.Thread):
+        # Ignore bot messages
+        if message.author.bot:
             return
+
+        # Check if message is in a thread or in the specific category
+        if not isinstance(message.channel, discord.Thread):
+            if message.channel.category_id != 1334667715444473886:
+                return
 
         try:
             # Find thread document
@@ -392,75 +408,6 @@ class ClaimThread(commands.Cog):
 
         except Exception as e:
             print(f"Notification send error: {e}")
-
-    @commands.command(name="thread_notify", aliases=["tn", "n"])
-    @commands.check(is_in_thread)
-    @checks.has_permissions(PermissionLevel.SUPPORTER)
-    async def thread_notify(self, ctx):
-        """Toggle thread notifications"""
-        try:
-            # Ensure thread exists in ticket stats
-            thread_doc = await self.ticket_stats_collection.find_one({
-                'guild_id': str(ctx.guild.id),
-                'channel_id': str(ctx.channel.id)
-            })
-
-            # If no existing document, create one
-            if not thread_doc:
-                await self.ticket_stats_collection.insert_one({
-                    'guild_id': str(ctx.guild.id),
-                    'channel_id': str(ctx.channel.id),
-                    'subscriptions': [str(ctx.author.id)]
-                })
-                
-                embed = discord.Embed(
-                    title="🔔 Thread Notifications",
-                    description=f"{ctx.author.mention} subscribed to thread notifications.",
-                    color=discord.Color.green()
-                )
-                await ctx.send(embed=embed)
-                return
-
-            # Get current subscriptions, default to empty list
-            subscriptions = thread_doc.get('subscriptions', [])
-            
-            # Convert to string to ensure consistent comparison
-            author_id = str(ctx.author.id)
-            
-            # Toggle subscription
-            if author_id in subscriptions:
-                # Unsubscribe
-                subscriptions.remove(author_id)
-                action = "unsubscribed"
-                color = discord.Color.red()
-            else:
-                # Subscribe
-                subscriptions.append(author_id)
-                action = "subscribed"
-                color = discord.Color.green()
-
-            # Update document with new subscriptions
-            await self.ticket_stats_collection.update_one(
-                {
-                    'guild_id': str(ctx.guild.id),
-                    'channel_id': str(ctx.channel.id)
-                },
-                {
-                    '$set': {'subscriptions': subscriptions}
-                }
-            )
-
-            # Send confirmation
-            embed = discord.Embed(
-                title="🔔 Thread Notifications",
-                description=f"{ctx.author.mention} {action} to thread notifications.",
-                color=color
-            )
-            await ctx.send(embed=embed)
-
-        except Exception as e:
-            await ctx.send(f"An error occurred: {e}")
-            print(f"Thread Notify error: {e}")
 
     @commands.command(name="unclaim")
     @commands.check(is_in_thread)
@@ -676,34 +623,117 @@ class ClaimThread(commands.Cog):
         :param moderator_id: ID of the moderator
         :return: Dictionary with daily and monthly ticket closure counts
         """
-        # Get current time
-        now = datetime.utcnow()
+        try:
+            # Convert moderator_id to string for consistent comparison
+            moderator_id = str(moderator_id)
+            
+            # Get current date and time
+            now = datetime.utcnow()
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            
+            # Aggregate pipeline to count closed tickets
+            daily_pipeline = [
+                {
+                    '$match': {
+                        'moderator_id': moderator_id,
+                        'status': 'closed',
+                        'closed_at': {'$gte': today_start}
+                    }
+                },
+                {'$count': 'daily_count'}
+            ]
+            
+            monthly_pipeline = [
+                {
+                    '$match': {
+                        'moderator_id': moderator_id,
+                        'status': 'closed',
+                        'closed_at': {'$gte': month_start}
+                    }
+                },
+                {'$count': 'monthly_count'}
+            ]
+            
+            # Execute aggregation
+            daily_result = await self.ticket_stats_collection.aggregate(daily_pipeline).to_list(length=1)
+            monthly_result = await self.ticket_stats_collection.aggregate(monthly_pipeline).to_list(length=1)
+            
+            # Extract counts, default to 0 if no results
+            daily_count = daily_result[0]['daily_count'] if daily_result else 0
+            monthly_count = monthly_result[0]['monthly_count'] if monthly_result else 0
+            
+            return {
+                'daily_count': daily_count,
+                'monthly_count': monthly_count
+            }
         
-        # Calculate start of today and start of this month
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        except Exception as e:
+            print(f"Error in get_ticket_closure_stats: {e}")
+            return {'daily_count': 0, 'monthly_count': 0}
+
+    async def send_closure_dm(self, moderator_id, daily_count, monthly_count):
+        """
+        Send a single DM to the moderator about ticket closure stats
         
-        # Convert moderator_id to string for database query
-        str_moderator_id = str(moderator_id)
+        :param moderator_id: ID of the moderator
+        :param daily_count: Number of tickets closed today
+        :param monthly_count: Number of tickets closed this month
+        """
+        try:
+            # Validate input
+            moderator_id = str(moderator_id)
+            daily_count = int(daily_count)
+            monthly_count = int(monthly_count)
+            
+            # Check if DM has already been sent today
+            cache_key = f"closure_dm_{moderator_id}_{datetime.utcnow().date()}"
+            
+            # Use bot's cache or create a simple in-memory cache
+            if not hasattr(self.bot, '_closure_dm_cache'):
+                self.bot._closure_dm_cache = {}
+            
+            # Check if DM has been sent today
+            if self.bot._closure_dm_cache.get(cache_key):
+                return
+            
+            # Get the user
+            user = self.bot.get_user(int(moderator_id))
+            if not user:
+                # Try fetching the user if not found in cache
+                try:
+                    user = await self.bot.fetch_user(int(moderator_id))
+                except discord.NotFound:
+                    print(f"User not found: {moderator_id}")
+                    return
+                except Exception as fetch_error:
+                    print(f"Error fetching user {moderator_id}: {fetch_error}")
+                    return
+            
+            # Create and send DM
+            embed = discord.Embed(
+                title="📊 Ticket Closure Stats",
+                description=(
+                    f"Congrats on closing your {daily_count} ticket{'s' if daily_count != 1 else ''} of the day! "
+                    f"This is your {monthly_count} ticket{'s' if monthly_count != 1 else ''} of the month."
+                ),
+                color=discord.Color.green()
+            )
+            
+            try:
+                await user.send(embed=embed)
+            except discord.Forbidden:
+                print(f"Cannot send DM to user {moderator_id}: User has DMs disabled")
+                return
+            except discord.HTTPException as http_error:
+                print(f"Failed to send DM to user {moderator_id}: {http_error}")
+                return
+            
+            # Mark DM as sent for today
+            self.bot._closure_dm_cache[cache_key] = True
         
-        # Count daily closed tickets
-        daily_tickets = await self.ticket_stats_collection.count_documents({
-            'moderator_id': str_moderator_id,
-            'status': 'closed',
-            'closed_at': {'$gte': today_start}
-        })
-        
-        # Count monthly closed tickets
-        monthly_tickets = await self.ticket_stats_collection.count_documents({
-            'moderator_id': str_moderator_id,
-            'status': 'closed',
-            'closed_at': {'$gte': month_start}
-        })
-        
-        return {
-            'daily_tickets': daily_tickets,
-            'monthly_tickets': monthly_tickets
-        }
+        except Exception as e:
+            print(f"Unexpected error in send_closure_dm: {e}")
 
     async def verify_thread_closure(self, thread_id, timeout=300):
         """
