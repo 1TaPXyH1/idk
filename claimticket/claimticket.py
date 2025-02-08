@@ -171,7 +171,7 @@ class ClaimThread(commands.Cog):
         self.bot.loop.create_task(self.background_channel_check())
 
         # Add checks for main commands
-        for cmd_name in ['claim', 'unclaim', 'reply', 'areply', 'freply', 'fareply', 'close']:
+        for cmd_name in ['claim', 'unclaim', 'reply', 'areply', 'freply', 'fareply', 'ticket_close']:
             if cmd := self.bot.get_command(cmd_name):
                 if cmd_name == 'claim':
                     cmd.add_check(check_claim)
@@ -179,7 +179,7 @@ class ClaimThread(commands.Cog):
                     cmd.add_check(check_unclaim)
                 elif cmd_name in ['reply', 'areply', 'freply', 'fareply']:
                     cmd.add_check(check_reply)
-                elif cmd_name == 'close':
+                elif cmd_name == 'ticket_close':
                     cmd.add_check(check_close)
 
     async def background_channel_check(self):
@@ -369,7 +369,7 @@ class ClaimThread(commands.Cog):
             await ctx.message.add_reaction('❌')
             print(f"Unclaim error: {e}")
 
-    @commands.command(name="close")
+    @commands.command(name="ticket_close", aliases=["tclose"])
     @commands.check(is_in_thread)
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     async def close_thread(self, ctx, *, reason=None):
