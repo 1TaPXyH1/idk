@@ -592,10 +592,7 @@ async def check_reply(ctx):
         if channel_id in cog.check_message_cache:
             last_time = cog.check_message_cache[channel_id]
             if current_time - last_time < 5:  # 5 second cooldown
-                try:
-                    await ctx.message.add_reaction('❌')
-                except:
-                    pass
+                cog.check_message_cache[channel_id] = current_time
                 raise commands.CheckFailure("Spam prevention: Please wait before trying again.")
                 
         thread = await cog.db.find_one({
@@ -622,7 +619,6 @@ async def check_reply(ctx):
         )
         
         if not can_reply:
-            # Update cache
             cog.check_message_cache[channel_id] = current_time
             raise commands.CheckFailure("This thread has been claimed by another user. You cannot reply.")
             
@@ -650,10 +646,7 @@ async def check_close(ctx):
         if channel_id in cog.check_message_cache:
             last_time = cog.check_message_cache[channel_id]
             if current_time - last_time < 5:  # 5 second cooldown
-                try:
-                    await ctx.message.add_reaction('❌')
-                except:
-                    pass
+                cog.check_message_cache[channel_id] = current_time
                 raise commands.CheckFailure("Spam prevention: Please wait before trying again.")
                 
         thread = await cog.db.find_one({
@@ -680,7 +673,6 @@ async def check_close(ctx):
         )
         
         if not can_close:
-            # Update cache
             cog.check_message_cache[channel_id] = current_time
             raise commands.CheckFailure("This thread has been claimed by another user. Only claimers can close it.")
             
@@ -693,5 +685,28 @@ async def check_close(ctx):
         return True
 
 
+class ClaimThreadErrorHandler(commands.Cog):
+    @commands.Cog.listener()
+    async def on_command_error(self, ctx, error):
+        """Handle specific check failures for claim thread plugin"""
+        if isinstance(error, commands.CheckFailure):
+            # Check if the error is from our plugin's checks
+            error_message = str(error)
+            if "claimed by another user" in error_message or "Spam prevention" in error_message:
+                try:
+                    # Send an ephemeral embed with the error message
+                    embed = discord.Embed(
+                        description=error_message,
+                        color=discord.Color.red()
+                    )
+                    await ctx.send(embed=embed, delete_after=10)
+                    await ctx.message.add_reaction('❌')
+                except:
+                    pass
+                return True
+        return False
+
+
 async def setup(bot):
     await bot.add_cog(ClaimThread(bot))
+    await bot.add_cog(ClaimThreadErrorHandler())
