@@ -183,9 +183,9 @@ class ClaimThread(commands.Cog):
         self.bot.loop.create_task(self.background_channel_check())
 
         # Add checks for main commands
-        for cmd_name in ['reply', 'areply', 'freply', 'fareply', 'close', 'claim', 'unclaim']:
+        for cmd_name in ['reply', 'areply', 'freply', 'fareply', 'close', 'r', 'ar', 'fr', 'far', 'claim', 'unclaim']:
             if cmd := self.bot.get_command(cmd_name):
-                if cmd_name in ['reply', 'areply', 'freply', 'fareply', 'close']:
+                if cmd_name in ['reply', 'areply', 'freply', 'fareply', 'close', 'r', 'ar', 'fr', 'far']:
                     cmd.add_check(check_reply)
                 elif cmd_name == 'claim':
                     cmd.add_check(check_claim)
@@ -304,6 +304,7 @@ class ClaimThread(commands.Cog):
 
     @commands.command(name="claim", aliases=["c"])
     @commands.check(is_in_thread)
+    @checks.thread_only()
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     async def claim_thread(self, ctx):
         """Claim the current ticket thread"""
@@ -359,6 +360,7 @@ class ClaimThread(commands.Cog):
 
     @commands.command(name="unclaim")
     @commands.check(is_in_thread)
+    @checks.thread_only()
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     async def unclaim_thread(self, ctx):
         """Unclaim the current ticket thread"""
@@ -394,6 +396,7 @@ class ClaimThread(commands.Cog):
 
     @commands.command(name="ticket_close", aliases=["tclose"])
     @commands.check(is_in_thread)
+    @checks.thread_only()
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     async def close_thread(self, ctx, *, reason=None):
         """Close the current ticket thread"""
@@ -423,6 +426,7 @@ class ClaimThread(commands.Cog):
 
     @commands.command(name="rename")
     @commands.check(is_in_thread)
+    @checks.thread_only()
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     async def rename_thread(self, ctx, *, new_name: str):
         """Rename the current ticket thread"""
@@ -770,6 +774,7 @@ class ClaimThread(commands.Cog):
 
     @commands.command(name="transfer")
     @commands.check(is_in_thread)
+    @checks.thread_only()
     async def transfer_claim(self, ctx, member: discord.Member):
         """Transfer ticket claim to another user (only by override roles)"""
         try:
@@ -827,7 +832,7 @@ class ClaimThread(commands.Cog):
 async def check_reply(ctx):
     """Check if user can reply to the thread"""
     # Skip check if not a reply or close command
-    reply_and_close_commands = ['reply', 'areply', 'freply', 'fareply', 'close']
+    reply_and_close_commands = ['reply', 'areply', 'freply', 'fareply', 'close', 'r', 'ar', 'fr', 'far']
     if ctx.command.name not in reply_and_close_commands:
         return True
     
