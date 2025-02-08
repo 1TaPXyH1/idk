@@ -361,6 +361,38 @@ class ClaimThread(commands.Cog):
             await ctx.message.add_reaction('❌')
             print(f"Claim error: {e}")
 
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        """Listener to send notifications for subscribed threads"""
+        # Ignore bot messages and messages in non-thread channels
+        if message.author.bot or not isinstance(message.channel, discord.Thread):
+            return
+
+        try:
+            # Find thread document
+            thread_doc = await self.ticket_stats_collection.find_one({
+                'guild_id': str(message.guild.id),
+                'channel_id': str(message.channel.id)
+            })
+
+            # If no subscriptions, return
+            if not thread_doc or not thread_doc.get('subscriptions'):
+                return
+
+            # Convert subscription IDs to mentions
+            subscriptions = thread_doc.get('subscriptions', [])
+            
+            # Exclude the message author from notifications if they're a subscriber
+            mentions = [f"<@{sub_id}>" for sub_id in subscriptions if sub_id != str(message.author.id)]
+            
+            # Create notification message
+            if mentions:
+                notification = " ".join(mentions)
+                await message.channel.send(f"Notification for: {notification}")
+
+        except Exception as e:
+            print(f"Notification send error: {e}")
+
     @commands.command(name="thread_notify", aliases=["tn", "n"])
     @commands.check(is_in_thread)
     @checks.has_permissions(PermissionLevel.SUPPORTER)
@@ -731,7 +763,9 @@ class ClaimThread(commands.Cog):
 
             # Convert subscription IDs to mentions
             subscriptions = thread_doc.get('subscriptions', [])
-            mentions = [f"<@{sub_id}>" for sub_id in subscriptions]
+            
+            # Exclude the message author from notifications if they're a subscriber
+            mentions = [f"<@{sub_id}>" for sub_id in subscriptions if sub_id != str(message.author.id)]
             
             # Create notification message
             if mentions:
