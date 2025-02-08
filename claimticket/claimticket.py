@@ -439,8 +439,19 @@ class ClaimThread(commands.Cog):
                 await ctx.message.add_reaction('❌')
                 return await ctx.send("Thread name cannot exceed 100 characters.")
             
-            # Rename the thread
-            await ctx.thread.edit(name=new_name)
+            # Attempt to rename using different methods
+            try:
+                # First, try using thread's channel
+                await ctx.thread.channel.edit(name=new_name)
+            except AttributeError:
+                try:
+                    # If channel method fails, try direct edit
+                    await ctx.thread.edit(name=new_name)
+                except Exception as e:
+                    # If all else fails, send a message
+                    await ctx.message.add_reaction('❌')
+                    return await ctx.send(f"Could not rename thread: {str(e)}")
+            
             await ctx.message.add_reaction('✅')
             
         except discord.Forbidden:
