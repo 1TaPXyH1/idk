@@ -672,7 +672,7 @@ class ClaimThread(commands.Cog):
     async def claim_config(self, ctx):
         """Configure claim override settings"""
         # Retrieve current configuration
-        config = await self.ticket_stats_collection.find_one({'_id': 'config'})
+        config = await self.config_collection.find_one({'_id': 'config'})
         override_roles = config.get('override_roles', []) if config else []
         
         # Create embed to show current override roles
@@ -706,7 +706,7 @@ class ClaimThread(commands.Cog):
         """Add a role to claim override list"""
         try:
             # Retrieve or create config
-            config = await self.ticket_stats_collection.find_one({'_id': 'config'}) or {}
+            config = await self.config_collection.find_one({'_id': 'config'}) or {}
             
             # Get current override roles or initialize empty list
             override_roles = config.get('override_roles', [])
@@ -742,7 +742,7 @@ class ClaimThread(commands.Cog):
         """Remove a role from claim override list"""
         try:
             # Retrieve configuration
-            config = await self.ticket_stats_collection.find_one({'_id': 'config'})
+            config = await self.config_collection.find_one({'_id': 'config'})
             
             # Get current override roles
             override_roles = config.get('override_roles', [])
