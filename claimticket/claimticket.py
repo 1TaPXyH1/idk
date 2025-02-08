@@ -777,7 +777,7 @@ class ClaimThread(commands.Cog):
     async def claim_config(self, ctx):
         """Configure claim override settings"""
         # Retrieve current configuration
-        config = await self.config_collection.find_one({'_id': 'config'})
+        config = await self.ticket_stats_collection.find_one({'_id': 'config'})
         override_roles = config.get('override_roles', []) if config else []
         
         # Create embed to show current override roles
@@ -811,7 +811,7 @@ class ClaimThread(commands.Cog):
         """Add a role to claim override list"""
         try:
             # Retrieve or create config
-            config = await self.config_collection.find_one({'_id': 'config'}) or {}
+            config = await self.ticket_stats_collection.find_one({'_id': 'config'}) or {}
             
             # Get current override roles or initialize empty list
             override_roles = config.get('override_roles', [])
@@ -847,7 +847,7 @@ class ClaimThread(commands.Cog):
         """Remove a role from claim override list"""
         try:
             # Retrieve configuration
-            config = await self.config_collection.find_one({'_id': 'config'})
+            config = await self.ticket_stats_collection.find_one({'_id': 'config'})
             
             # Get current override roles
             override_roles = config.get('override_roles', [])
@@ -934,36 +934,27 @@ class ClaimThread(commands.Cog):
             await ctx.send(f"Error transferring claim: {str(e)}")
 
 async def check_reply(ctx):
-    """Check if user can reply to the thread"""
-    # Skip check if not a reply command
-    reply_commands = ['reply', 'areply', 'freply', 'fareply']
-    if ctx.command.name not in reply_commands:
-        return True
-    
-    # Skip check if no thread attribute
+    """Comprehensive check for reply-related actions in a claimed thread"""
+    # Skip check if no thread attribute or not a reply-related context
     if not hasattr(ctx, 'thread'):
+        return True
+
+    # List of reply-related commands and actions
+    reply_related_commands = [
+        'reply', 'areply', 'freply', 'fareply',  # Text replies
+        'react', 'unreact',  # Reaction actions
+        'edit', 'delete'  # Message edit/delete
+    ]
+
+    # Check if the current command or action is reply-related
+    is_reply_related = any(cmd in str(ctx.command).lower() for cmd in reply_related_commands)
+    
+    if not is_reply_related:
         return True
 
     try:
         cog = ctx.bot.get_cog('ClaimThread')
         channel_id = str(ctx.thread.channel.id)
-        
-        # Check message cache to prevent spam
-        current_time = time.time()
-        
-        # Reset cache if it's been more than 10 seconds
-        if channel_id in cog.check_message_cache:
-            last_time = cog.check_message_cache[channel_id]
-            if current_time - last_time > 10:  # 10 second reset
-                del cog.check_message_cache[channel_id]
-        
-        # Check for recent command
-        if channel_id in cog.check_message_cache:
-            cog.check_message_cache[channel_id] = current_time
-            raise commands.CheckFailure("Please wait a moment before using this command again.")
-        
-        # Mark the channel as recently used
-        cog.check_message_cache[channel_id] = current_time
         
         # Check if thread is claimed
         thread_claim = await cog.ticket_stats_collection.find_one({
@@ -982,20 +973,19 @@ async def check_reply(ctx):
                 member_roles = [role.id for role in ctx.author.roles]
                 has_override = any(role_id in member_roles for role_id in override_roles)
             
-            # Allow reply if:
+            # Allow action if:
             # 1. User is the moderator who claimed the ticket
             # 2. User has override roles
             # 3. User is a bot
-            can_reply = (
+            can_act = (
                 ctx.author.bot or 
                 str(ctx.author.id) == thread_claim.get('moderator_id') or 
                 has_override
             )
             
-            if not can_reply:
-                cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("This ticket has been claimed by another moderator. You cannot reply.")
-            
+            if not can_act:
+                raise commands.CheckFailure("This ticket has been claimed by another moderator. You cannot interact with it.")
+        
         return True
         
     except commands.CheckFailure:
