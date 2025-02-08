@@ -183,7 +183,7 @@ class ClaimThread(commands.Cog):
         self.bot.loop.create_task(self.background_channel_check())
 
         # Add checks for main commands
-        for cmd_name in ['claim', 'unclaim', 'reply', 'areply', 'freply', 'fareply', 'ticket_close', 'rename']:
+        for cmd_name in ['claim', 'unclaim', 'reply', 'areply', 'freply', 'fareply', 'ticket_close']:
             if cmd := self.bot.get_command(cmd_name):
                 if cmd_name == 'claim':
                     cmd.add_check(check_claim)
@@ -193,8 +193,6 @@ class ClaimThread(commands.Cog):
                     cmd.add_check(check_reply)
                 elif cmd_name == 'ticket_close':
                     cmd.add_check(check_close)
-                elif cmd_name == 'rename':
-                    cmd.add_check(check_rename)
 
     async def background_channel_check(self):
         """
@@ -440,38 +438,6 @@ class ClaimThread(commands.Cog):
             if len(new_name) > 100:
                 await ctx.message.add_reaction('❌')
                 return await ctx.send("Thread name cannot exceed 100 characters.")
-            
-            # Check if thread is claimed
-            channel_id = str(ctx.thread.channel.id)
-            thread_claim = await self.ticket_stats_collection.find_one({
-                'guild_id': str(ctx.guild.id),
-                'channel_id': channel_id,
-                'status': 'claimed'
-            })
-            
-            # If thread is claimed, ensure only claiming moderator or override roles can rename
-            if thread_claim:
-                # Check for override permissions
-                has_override = False
-                config = await self.config_collection.find_one({'_id': 'config'})
-                if config:
-                    override_roles = config.get('override_roles', [])
-                    member_roles = [role.id for role in ctx.author.roles]
-                    has_override = any(role_id in member_roles for role_id in override_roles)
-                
-                # Allow rename if:
-                # 1. User is the moderator who claimed the ticket
-                # 2. User has override roles
-                # 3. User is a bot
-                can_rename = (
-                    ctx.author.bot or 
-                    str(ctx.author.id) == thread_claim.get('moderator_id') or 
-                    has_override
-                )
-                
-                if not can_rename:
-                    await ctx.message.add_reaction('❌')
-                    return await ctx.send("This ticket has been claimed by another moderator. Only the claiming moderator can rename it.")
             
             # Rename the thread
             await ctx.thread.edit(name=new_name)
@@ -1015,63 +981,6 @@ async def check_close(ctx):
         raise
     except Exception as e:
         print(f"Error in check_close: {e}")
-        return True
-
-async def check_rename(ctx):
-    """Check if user can rename the thread"""
-    # Skip check if no thread attribute
-    if not hasattr(ctx, 'thread'):
-        return True
-
-    try:
-        cog = ctx.bot.get_cog('ClaimThread')
-        channel_id = str(ctx.thread.channel.id)
-        
-        # Check message cache to prevent spam
-        current_time = time.time()
-        if channel_id in cog.check_message_cache:
-            last_time = cog.check_message_cache[channel_id]
-            if current_time - last_time < 5:  # 5 second cooldown
-                cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("Spam prevention: Please wait before trying again.")
-                
-        # Check if thread is claimed
-        thread_claim = await cog.ticket_stats_collection.find_one({
-            'guild_id': str(ctx.guild.id),
-            'channel_id': channel_id,
-            'status': 'claimed'
-        })
-        
-        # If thread is claimed
-        if thread_claim:
-            # Check for override permissions
-            has_override = False
-            config = await cog.config_collection.find_one({'_id': 'config'})
-            if config:
-                override_roles = config.get('override_roles', [])
-                member_roles = [role.id for role in ctx.author.roles]
-                has_override = any(role_id in member_roles for role_id in override_roles)
-            
-            # Allow rename if:
-            # 1. User is the moderator who claimed the ticket
-            # 2. User has override roles
-            # 3. User is a bot
-            can_rename = (
-                ctx.author.bot or 
-                str(ctx.author.id) == thread_claim.get('moderator_id') or 
-                has_override
-            )
-            
-            if not can_rename:
-                cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("This ticket has been claimed by another moderator. Only the claiming moderator can rename it.")
-            
-        return True
-        
-    except commands.CheckFailure:
-        raise
-    except Exception as e:
-        print(f"Error in check_rename: {e}")
         return True
 
 class ClaimThreadErrorHandler(commands.Cog):
