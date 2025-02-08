@@ -772,6 +772,167 @@ class ClaimThread(commands.Cog):
             await ctx.send(embed=error_embed)
             print(f"Tickets command error: {e}")
 
+    @commands.group(name="claimconfig", invoke_without_command=True)
+    @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
+    async def claim_config(self, ctx):
+        """Configure claim override settings"""
+        # Retrieve current configuration
+        config = await self.config_collection.find_one({'_id': 'config'})
+        override_roles = config.get('override_roles', []) if config else []
+        
+        # Create embed to show current override roles
+        embed = discord.Embed(
+            title="Claim Override Configuration",
+            description="Roles that can bypass claim restrictions",
+            color=self.bot.main_color
+        )
+        
+        if override_roles:
+            role_mentions = []
+            for role_id in override_roles:
+                role = ctx.guild.get_role(role_id)
+                if role:
+                    role_mentions.append(role.mention)
+            
+            embed.add_field(
+                name="Current Override Roles", 
+                value="\n".join(role_mentions) if role_mentions else "No roles configured",
+                inline=False
+            )
+        else:
+            embed.description = "No override roles configured"
+        
+        embed.set_footer(text="Use .claimconfig add/remove @Role to modify")
+        await ctx.send(embed=embed)
+
+    @claim_config.command(name="add")
+    @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
+    async def claim_override_add(self, ctx, *, role: discord.Role):
+        """Add a role to claim override list"""
+        try:
+            # Retrieve or create config
+            config = await self.config_collection.find_one({'_id': 'config'}) or {}
+            
+            # Get current override roles or initialize empty list
+            override_roles = config.get('override_roles', [])
+            
+            # Check if role is already in override list
+            if role.id in override_roles:
+                return await ctx.send(f"{role.mention} is already in the override list.")
+            
+            # Add role to override list
+            override_roles.append(role.id)
+            
+            # Update configuration
+            await self.config_collection.update_one(
+                {'_id': 'config'},
+                {'$set': {'override_roles': override_roles}},
+                upsert=True
+            )
+            
+            # Create confirmation embed
+            embed = discord.Embed(
+                title="Claim Override Role Added",
+                description=f"{role.mention} can now bypass claim restrictions",
+                color=discord.Color.green()
+            )
+            await ctx.send(embed=embed)
+        
+        except Exception as e:
+            await ctx.send(f"Error adding override role: {str(e)}")
+
+    @claim_config.command(name="remove")
+    @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
+    async def claim_override_remove(self, ctx, *, role: discord.Role):
+        """Remove a role from claim override list"""
+        try:
+            # Retrieve configuration
+            config = await self.config_collection.find_one({'_id': 'config'})
+            
+            # Get current override roles
+            override_roles = config.get('override_roles', [])
+            
+            # Check if role is in override list
+            if role.id not in override_roles:
+                return await ctx.send(f"{role.mention} is not in the override list.")
+            
+            # Remove role from override list
+            override_roles.remove(role.id)
+            
+            # Update configuration
+            await self.config_collection.update_one(
+                {'_id': 'config'},
+                {'$set': {'override_roles': override_roles}},
+                upsert=True
+            )
+            
+            # Create confirmation embed
+            embed = discord.Embed(
+                title="Claim Override Role Removed",
+                description=f"{role.mention} can no longer bypass claim restrictions",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+        
+        except Exception as e:
+            await ctx.send(f"Error removing override role: {str(e)}")
+
+    @commands.command(name="transfer")
+    @commands.check(is_in_thread)
+    async def transfer_claim(self, ctx, member: discord.Member):
+        """Transfer ticket claim to another user (only by override roles)"""
+        try:
+            # Check if user has override permissions
+            has_override = False
+            config = await self.config_collection.find_one({'_id': 'config'})
+            if config:
+                override_roles = config.get('override_roles', [])
+                member_roles = [role.id for role in ctx.author.roles]
+                has_override = any(role_id in member_roles for role_id in override_roles)
+            
+            # Only allow transfer by override roles
+            if not has_override:
+                return await ctx.send("Only users with override roles can transfer claims.")
+            
+            # Check current claim status
+            channel_id = str(ctx.thread.channel.id)
+            current_claim = await self.ticket_stats_collection.find_one({
+                'guild_id': str(ctx.guild.id),
+                'channel_id': channel_id,
+                'status': 'claimed'
+            })
+            
+            if not current_claim:
+                return await ctx.send("This ticket is not currently claimed.")
+            
+            # Update claim to new user
+            await self.ticket_stats_collection.update_one(
+                {
+                    'guild_id': str(ctx.guild.id),
+                    'channel_id': channel_id
+                },
+                {
+                    '$set': {
+                        'moderator_id': str(member.id),
+                        'transferred_by': str(ctx.author.id)
+                    }
+                }
+            )
+            
+            # Create transfer embed
+            embed = discord.Embed(
+                title="Ticket Claim Transferred",
+                description=f"Ticket claim transferred from {ctx.author.mention} to {member.mention}",
+                color=self.bot.main_color
+            )
+            embed.add_field(name="Original Claimer", value=ctx.author.mention, inline=True)
+            embed.add_field(name="New Claimer", value=member.mention, inline=True)
+            
+            await ctx.send(embed=embed)
+        
+        except Exception as e:
+            await ctx.send(f"Error transferring claim: {str(e)}")
+
 async def check_reply(ctx):
     """Check if user can reply to the thread"""
     # Skip check if not a reply command
