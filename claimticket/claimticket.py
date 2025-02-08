@@ -183,16 +183,14 @@ class ClaimThread(commands.Cog):
         self.bot.loop.create_task(self.background_channel_check())
 
         # Add checks for main commands
-        for cmd_name in ['claim', 'unclaim', 'reply', 'areply', 'freply', 'fareply', 'ticket_close']:
+        for cmd_name in ['reply', 'areply', 'freply', 'fareply', 'close', 'claim', 'unclaim']:
             if cmd := self.bot.get_command(cmd_name):
-                if cmd_name == 'claim':
+                if cmd_name in ['reply', 'areply', 'freply', 'fareply', 'close']:
+                    cmd.add_check(check_reply)
+                elif cmd_name == 'claim':
                     cmd.add_check(check_claim)
                 elif cmd_name == 'unclaim':
                     cmd.add_check(check_unclaim)
-                elif cmd_name in ['reply', 'areply', 'freply', 'fareply']:
-                    cmd.add_check(check_reply)
-                elif cmd_name == 'ticket_close':
-                    cmd.add_check(check_close)
 
     async def background_channel_check(self):
         """
@@ -935,9 +933,9 @@ class ClaimThread(commands.Cog):
 
 async def check_reply(ctx):
     """Check if user can reply to the thread"""
-    # Skip check if not a reply command
-    reply_commands = ['reply', 'areply', 'freply', 'fareply']
-    if ctx.command.name not in reply_commands:
+    # Skip check if not a reply or close command
+    reply_and_close_commands = ['reply', 'areply', 'freply', 'fareply', 'close']
+    if ctx.command.name not in reply_and_close_commands:
         return True
     
     # Skip check if no thread attribute
@@ -954,7 +952,8 @@ async def check_reply(ctx):
             last_time = cog.check_message_cache[channel_id]
             if current_time - last_time < 5:  # 5 second cooldown
                 cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("Spam prevention: Please wait before trying again.")
+                await ctx.message.add_reaction('🚫')
+                return False
                 
         # Check if thread is claimed
         thread_claim = await cog.ticket_stats_collection.find_one({
@@ -973,24 +972,23 @@ async def check_reply(ctx):
                 member_roles = [role.id for role in ctx.author.roles]
                 has_override = any(role_id in member_roles for role_id in override_roles)
             
-            # Allow reply if:
+            # Allow reply/close if:
             # 1. User is the moderator who claimed the ticket
             # 2. User has override roles
             # 3. User is a bot
-            can_reply = (
+            can_interact = (
                 ctx.author.bot or 
                 str(ctx.author.id) == thread_claim.get('moderator_id') or 
                 has_override
             )
             
-            if not can_reply:
+            if not can_interact:
                 cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("This ticket has been claimed by another moderator. You cannot reply.")
+                await ctx.message.add_reaction('🚫')
+                return False
             
         return True
         
-    except commands.CheckFailure:
-        raise
     except Exception as e:
         print(f"Error in check_reply: {e}")
         return True
@@ -1011,7 +1009,8 @@ async def check_claim(ctx):
             last_time = cog.check_message_cache[channel_id]
             if current_time - last_time < 5:  # 5 second cooldown
                 cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("Spam prevention: Please wait before trying again.")
+                await ctx.message.add_reaction('🚫')
+                return False
                 
         # Check if thread is already claimed
         thread_claim = await cog.ticket_stats_collection.find_one({
@@ -1033,12 +1032,11 @@ async def check_claim(ctx):
             # If not an override role, block claim
             if not has_override:
                 cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("This ticket is already claimed and cannot be reclaimed.")
+                await ctx.message.add_reaction('🚫')
+                return False
             
         return True
         
-    except commands.CheckFailure:
-        raise
     except Exception as e:
         print(f"Error in check_claim: {e}")
         return True
@@ -1059,7 +1057,8 @@ async def check_unclaim(ctx):
             last_time = cog.check_message_cache[channel_id]
             if current_time - last_time < 5:  # 5 second cooldown
                 cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("Spam prevention: Please wait before trying again.")
+                await ctx.message.add_reaction('🚫')
+                return False
                 
         # Check if thread is claimed
         thread_claim = await cog.ticket_stats_collection.find_one({
@@ -1088,12 +1087,11 @@ async def check_unclaim(ctx):
             
             if not can_unclaim:
                 cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("You cannot unclaim a ticket claimed by another moderator.")
+                await ctx.message.add_reaction('🚫')
+                return False
             
         return True
         
-    except commands.CheckFailure:
-        raise
     except Exception as e:
         print(f"Error in check_unclaim: {e}")
         return True
@@ -1114,7 +1112,8 @@ async def check_close(ctx):
             last_time = cog.check_message_cache[channel_id]
             if current_time - last_time < 5:  # 5 second cooldown
                 cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("Spam prevention: Please wait before trying again.")
+                await ctx.message.add_reaction('🚫')
+                return False
                 
         # Check if thread is claimed
         thread_claim = await cog.ticket_stats_collection.find_one({
@@ -1145,12 +1144,11 @@ async def check_close(ctx):
             
             if not can_close:
                 cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("This ticket has been claimed by another moderator. Only the claiming moderator can close it.")
+                await ctx.message.add_reaction('🚫')
+                return False
             
         return True
         
-    except commands.CheckFailure:
-        raise
     except Exception as e:
         print(f"Error in check_close: {e}")
         return True
