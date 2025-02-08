@@ -26,6 +26,7 @@ class ClaimThread(commands.Cog):
         self.user_cache = {}
         self.cache_lifetime = 300  # 5 minutes
         self.check_message_cache = {}
+        self.ticket_stats_collection = self.db  # Initialize ticket stats collection
         
         # Track command usage per channel
         self.command_usage = {}
@@ -43,6 +44,13 @@ class ClaimThread(commands.Cog):
             'command_cooldown': 5,    # 5 seconds per user
             'thread_cooldown': 300    # 5 minutes per thread
         }
+
+    async def initialize_mongodb(self):
+        """
+        Initialize ticket stats tracking to resolve attribute error
+        """
+        # Use the existing database partition as ticket stats collection
+        self.ticket_stats_collection = self.db
 
     async def clean_old_claims(self):
         """Clean up claims for non-existent channels"""
@@ -509,7 +517,7 @@ class ClaimThread(commands.Cog):
     async def claim_override(self, ctx):
         """Manage override roles for claims"""
         if ctx.invoked_subcommand is None:
-            config = await self.get_config()
+            config = await self.db.find_one({'_id': 'config'})
             
             override_roles = []
             for role_id in config['override_roles']:
