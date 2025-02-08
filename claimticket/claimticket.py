@@ -327,11 +327,6 @@ class ClaimThread(commands.Cog):
                 
                 # If not an override role, block claim
                 if not has_override:
-                    embed = discord.Embed(
-                        description="This ticket is already claimed and cannot be reclaimed.",
-                        color=discord.Color.red()
-                    )
-                    await ctx.send(embed=embed)
                     await ctx.message.add_reaction('🚫')
                     return
 
@@ -391,7 +386,7 @@ class ClaimThread(commands.Cog):
                 )
                 await ctx.send(embed=embed)
             else:
-                await ctx.send("You cannot unclaim this ticket.")
+                await ctx.message.add_reaction('🚫')
         
         except Exception as e:
             await ctx.message.add_reaction('❌')
@@ -602,108 +597,6 @@ class ClaimThread(commands.Cog):
             # Silently handle any unexpected errors
             pass
 
-    async def get_ticket_closure_stats(self, moderator_id):
-        """
-        Calculate daily and monthly ticket closure statistics
-        
-        :param moderator_id: ID of the moderator
-        :return: Dictionary with daily and monthly ticket closure counts
-        """
-        try:
-            # Convert moderator_id to string for consistent comparison
-            moderator_id = str(moderator_id)
-            
-            # Get current date and time
-            now = datetime.utcnow()
-            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            
-            # Aggregate pipeline to count closed tickets
-            daily_pipeline = [
-                {
-                    '$match': {
-                        'moderator_id': moderator_id,
-                        'status': 'closed',
-                        'closed_at': {'$gte': today_start}
-                    }
-                },
-                {'$count': 'daily_count'}
-            ]
-            
-            monthly_pipeline = [
-                {
-                    '$match': {
-                        'moderator_id': moderator_id,
-                        'status': 'closed',
-                        'closed_at': {'$gte': month_start}
-                    }
-                },
-                {'$count': 'monthly_count'}
-            ]
-            
-            # Execute aggregation
-            daily_result = await self.ticket_stats_collection.aggregate(daily_pipeline).to_list(length=1)
-            monthly_result = await self.ticket_stats_collection.aggregate(monthly_pipeline).to_list(length=1)
-            
-            # Extract counts, default to 0 if no results
-            daily_count = daily_result[0]['daily_count'] if daily_result else 0
-            monthly_count = monthly_result[0]['monthly_count'] if monthly_result else 0
-            
-            return {
-                'daily_count': daily_count,
-                'monthly_count': monthly_count
-            }
-        
-        except Exception as e:
-            print(f"Error in get_ticket_closure_stats: {e}")
-            return {'daily_count': 0, 'monthly_count': 0}
-
-    async def verify_thread_closure(self, thread_id, timeout=300):
-        """
-        Verify if a thread is actually closed
-        
-        :param thread_id: ID of the thread to check
-        :param timeout: Maximum time to wait for closure (in seconds)
-        :return: Boolean indicating if thread is closed
-        """
-        start_time = datetime.utcnow()
-        
-        while (datetime.utcnow() - start_time).total_seconds() < timeout:
-            try:
-                # Attempt to fetch the thread
-                thread = self.bot.get_channel(thread_id)
-                
-                # Check thread state
-                if thread is None:
-                    # Thread completely deleted
-                    return True
-                
-                if thread.closed:
-                    # Thread is archived/closed
-                    return True
-                
-                # Check if thread has no recent messages
-                try:
-                    recent_messages = await thread.history(limit=1).flatten()
-                    if not recent_messages:
-                        return True
-                except Exception:
-                    # If history fetch fails, it might indicate closure
-                    return True
-                
-                # Wait before next check
-                await asyncio.sleep(10)  # Check every 10 seconds
-            
-            except Exception:
-                # Silently handle any unexpected errors
-                return False
-        
-        # Timeout reached without confirmation
-        return False
-
-    async def send_thread_notification(self, thread, message):
-        """Placeholder for thread notification method"""
-        pass
 
     @commands.command(name="tickets")
     @checks.has_permissions(PermissionLevel.SUPPORTER)
@@ -775,7 +668,7 @@ class ClaimThread(commands.Cog):
     async def claim_config(self, ctx):
         """Configure claim override settings"""
         # Retrieve current configuration
-        config = await self.config_collection.find_one({'_id': 'config'})
+        config = await self.ticket_stats_collection.find_one({'_id': 'config'})
         override_roles = config.get('override_roles', []) if config else []
         
         # Create embed to show current override roles
@@ -809,7 +702,7 @@ class ClaimThread(commands.Cog):
         """Add a role to claim override list"""
         try:
             # Retrieve or create config
-            config = await self.config_collection.find_one({'_id': 'config'}) or {}
+            config = await self.ticket_stats_collection.find_one({'_id': 'config'}) or {}
             
             # Get current override roles or initialize empty list
             override_roles = config.get('override_roles', [])
@@ -845,7 +738,7 @@ class ClaimThread(commands.Cog):
         """Remove a role from claim override list"""
         try:
             # Retrieve configuration
-            config = await self.config_collection.find_one({'_id': 'config'})
+            config = await self.ticket_stats_collection.find_one({'_id': 'config'})
             
             # Get current override roles
             override_roles = config.get('override_roles', [])
@@ -1153,27 +1046,5 @@ async def check_close(ctx):
         print(f"Error in check_close: {e}")
         return True
 
-class ClaimThreadErrorHandler(commands.Cog):
-    @commands.Cog.listener()
-    async def on_command_error(self, ctx, error):
-        """Handle specific check failures for claim thread plugin"""
-        if isinstance(error, commands.CheckFailure):
-            # Check if the error is from our plugin's checks
-            error_message = str(error)
-            if "claimed by another user" in error_message or "Spam prevention" in error_message:
-                try:
-                    # Send an ephemeral embed with the error message
-                    embed = discord.Embed(
-                        description=error_message,
-                        color=discord.Color.red()
-                    )
-                    await ctx.send(embed=embed, delete_after=10)
-                    await ctx.message.add_reaction('❌')
-                except:
-                    pass
-                return True
-        return False
-
 async def setup(bot):
     await bot.add_cog(ClaimThread(bot))
-    await bot.add_cog(ClaimThreadErrorHandler())
