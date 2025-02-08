@@ -950,12 +950,21 @@ async def check_reply(ctx):
         
         # Check message cache to prevent spam
         current_time = time.time()
+        
+        # Reset cache if it's been more than 10 seconds
         if channel_id in cog.check_message_cache:
             last_time = cog.check_message_cache[channel_id]
-            if current_time - last_time < 5:  # 5 second cooldown
-                cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("Spam prevention: Please wait before trying again.")
-                
+            if current_time - last_time > 10:  # 10 second reset
+                del cog.check_message_cache[channel_id]
+        
+        # Check for recent command
+        if channel_id in cog.check_message_cache:
+            cog.check_message_cache[channel_id] = current_time
+            raise commands.CheckFailure("Please wait a moment before using this command again.")
+        
+        # Mark the channel as recently used
+        cog.check_message_cache[channel_id] = current_time
+        
         # Check if thread is claimed
         thread_claim = await cog.ticket_stats_collection.find_one({
             'guild_id': str(ctx.guild.id),
@@ -1007,11 +1016,20 @@ async def check_claim(ctx):
         
         # Check message cache to prevent spam
         current_time = time.time()
+        
+        # Reset cache if it's been more than 10 seconds
         if channel_id in cog.check_message_cache:
             last_time = cog.check_message_cache[channel_id]
-            if current_time - last_time < 5:  # 5 second cooldown
-                cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("Spam prevention: Please wait before trying again.")
+            if current_time - last_time > 10:  # 10 second reset
+                del cog.check_message_cache[channel_id]
+        
+        # Check for recent command
+        if channel_id in cog.check_message_cache:
+            cog.check_message_cache[channel_id] = current_time
+            raise commands.CheckFailure("Please wait a moment before using this command again.")
+        
+        # Mark the channel as recently used
+        cog.check_message_cache[channel_id] = current_time
                 
         # Check if thread is already claimed
         thread_claim = await cog.ticket_stats_collection.find_one({
@@ -1055,11 +1073,20 @@ async def check_unclaim(ctx):
         
         # Check message cache to prevent spam
         current_time = time.time()
+        
+        # Reset cache if it's been more than 10 seconds
         if channel_id in cog.check_message_cache:
             last_time = cog.check_message_cache[channel_id]
-            if current_time - last_time < 5:  # 5 second cooldown
-                cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("Spam prevention: Please wait before trying again.")
+            if current_time - last_time > 10:  # 10 second reset
+                del cog.check_message_cache[channel_id]
+        
+        # Check for recent command
+        if channel_id in cog.check_message_cache:
+            cog.check_message_cache[channel_id] = current_time
+            raise commands.CheckFailure("Please wait a moment before using this command again.")
+        
+        # Mark the channel as recently used
+        cog.check_message_cache[channel_id] = current_time
                 
         # Check if thread is claimed
         thread_claim = await cog.ticket_stats_collection.find_one({
@@ -1110,11 +1137,20 @@ async def check_close(ctx):
         
         # Check message cache to prevent spam
         current_time = time.time()
+        
+        # Reset cache if it's been more than 10 seconds
         if channel_id in cog.check_message_cache:
             last_time = cog.check_message_cache[channel_id]
-            if current_time - last_time < 5:  # 5 second cooldown
-                cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("Spam prevention: Please wait before trying again.")
+            if current_time - last_time > 10:  # 10 second reset
+                del cog.check_message_cache[channel_id]
+        
+        # Check for recent command
+        if channel_id in cog.check_message_cache:
+            cog.check_message_cache[channel_id] = current_time
+            raise commands.CheckFailure("Please wait a moment before using this command again.")
+        
+        # Mark the channel as recently used
+        cog.check_message_cache[channel_id] = current_time
                 
         # Check if thread is claimed
         thread_claim = await cog.ticket_stats_collection.find_one({
