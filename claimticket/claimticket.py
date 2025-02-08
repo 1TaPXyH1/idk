@@ -361,10 +361,10 @@ class ClaimThread(commands.Cog):
             await ctx.message.add_reaction('❌')
             print(f"Claim error: {e}")
 
-    @commands.command(name="notify", aliases=["n"])
+    @commands.command(name="thread_notify", aliases=["tn", "n"])
     @commands.check(is_in_thread)
     @checks.has_permissions(PermissionLevel.SUPPORTER)
-    async def notify(self, ctx):
+    async def thread_notify(self, ctx):
         """Toggle thread notifications"""
         try:
             # Ensure thread exists in ticket stats
@@ -428,32 +428,7 @@ class ClaimThread(commands.Cog):
 
         except Exception as e:
             await ctx.send(f"An error occurred: {e}")
-            print(f"Notify error: {e}")
-
-    async def send_thread_notification(self, thread, message):
-        """Send notifications to subscribed users"""
-        try:
-            # Find thread document
-            thread_doc = await self.ticket_stats_collection.find_one({
-                'guild_id': str(thread.guild.id),
-                'channel_id': str(thread.id)
-            })
-
-            # If no subscriptions, return
-            if not thread_doc or not thread_doc.get('subscriptions'):
-                return
-
-            # Convert subscription IDs to mentions
-            subscriptions = thread_doc.get('subscriptions', [])
-            mentions = [f"<@{sub_id}>" for sub_id in subscriptions]
-            
-            # Create notification message
-            if mentions:
-                notification = " ".join(mentions)
-                await thread.send(f"Notification for: {notification}")
-
-        except Exception as e:
-            print(f"Notification send error: {e}")
+            print(f"Thread Notify error: {e}")
 
     @commands.command(name="unclaim")
     @commands.check(is_in_thread)
@@ -740,6 +715,31 @@ class ClaimThread(commands.Cog):
         
         # Timeout reached without confirmation
         return False
+
+    async def send_thread_notification(self, thread, message):
+        """Send notifications to subscribed users"""
+        try:
+            # Find thread document
+            thread_doc = await self.ticket_stats_collection.find_one({
+                'guild_id': str(thread.guild.id),
+                'channel_id': str(thread.id)
+            })
+
+            # If no subscriptions, return
+            if not thread_doc or not thread_doc.get('subscriptions'):
+                return
+
+            # Convert subscription IDs to mentions
+            subscriptions = thread_doc.get('subscriptions', [])
+            mentions = [f"<@{sub_id}>" for sub_id in subscriptions]
+            
+            # Create notification message
+            if mentions:
+                notification = " ".join(mentions)
+                await thread.send(f"Notification for: {notification}")
+
+        except Exception as e:
+            print(f"Notification send error: {e}")
 
 async def check_reply(ctx):
     """Check if user can reply to the thread"""
