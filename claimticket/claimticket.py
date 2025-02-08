@@ -246,19 +246,11 @@ class ClaimThread(commands.Cog):
                                 try:
                                     # Fetch user and get ticket closure stats
                                     user = await self.bot.fetch_user(int(ticket['moderator_id']))
-                                    stats = await self.get_ticket_closure_stats(ticket['moderator_id'])
-                                    
-                                    # Send DM using new method
-                                    await self.send_closure_dm(ticket['moderator_id'], stats['daily_count'], stats['monthly_count'])
                                     
                                     # Mark this ticket as notified
                                     self.notified_closed_tickets.add(channel_id)
                                 except Exception as dm_error:
-                                    print(f"Failed to send DM for ticket {ticket.get('_id')}: {dm_error}")
-                                    # Log additional details for debugging
-                                    print(f"Moderator ID: {ticket.get('moderator_id')}")
-                                    print(f"Guild ID: {guild_id}")
-                                    print(f"Channel ID: {channel_id}")
+                                    print(f"Failed to process ticket {ticket.get('_id')}: {dm_error}")
                             
                             # Mark as closed
                             await self.on_thread_state_change(
@@ -362,52 +354,15 @@ class ClaimThread(commands.Cog):
 
             # Send claim embed
             embed = discord.Embed(
-                title="📋 Ticket Claimed",
+                title="Ticket Claimed",
                 description=f"{ctx.author.mention} claimed the ticket.",
                 color=discord.Color.orange()
             )
             await ctx.send(embed=embed)
         
         except Exception as e:
-            await ctx.message.add_reaction('❌')
+            await ctx.message.add_reaction('🚫')
             print(f"Claim error: {e}")
-
-    @commands.Cog.listener()
-    async def on_message(self, message):
-        """Listener to send notifications for subscribed threads"""
-        # Ignore bot messages
-        if message.author.bot:
-            return
-
-        # Check if message is in a thread or in the specific category
-        if not isinstance(message.channel, discord.Thread):
-            if message.channel.category_id != 1334667715444473886:
-                return
-
-        try:
-            # Find thread document
-            thread_doc = await self.ticket_stats_collection.find_one({
-                'guild_id': str(message.guild.id),
-                'channel_id': str(message.channel.id)
-            })
-
-            # If no subscriptions, return
-            if not thread_doc or not thread_doc.get('subscriptions'):
-                return
-
-            # Convert subscription IDs to mentions
-            subscriptions = thread_doc.get('subscriptions', [])
-            
-            # Exclude the message author from notifications if they're a subscriber
-            mentions = [f"<@{sub_id}>" for sub_id in subscriptions if sub_id != str(message.author.id)]
-            
-            # Create notification message
-            if mentions:
-                notification = " ".join(mentions)
-                await message.channel.send(f"Notification for: {notification}")
-
-        except Exception as e:
-            print(f"Notification send error: {e}")
 
     @commands.command(name="unclaim")
     @commands.check(is_in_thread)
@@ -672,69 +627,6 @@ class ClaimThread(commands.Cog):
             print(f"Error in get_ticket_closure_stats: {e}")
             return {'daily_count': 0, 'monthly_count': 0}
 
-    async def send_closure_dm(self, moderator_id, daily_count, monthly_count):
-        """
-        Send a single DM to the moderator about ticket closure stats
-        
-        :param moderator_id: ID of the moderator
-        :param daily_count: Number of tickets closed today
-        :param monthly_count: Number of tickets closed this month
-        """
-        try:
-            # Validate input
-            moderator_id = str(moderator_id)
-            daily_count = int(daily_count)
-            monthly_count = int(monthly_count)
-            
-            # Check if DM has already been sent today
-            cache_key = f"closure_dm_{moderator_id}_{datetime.utcnow().date()}"
-            
-            # Use bot's cache or create a simple in-memory cache
-            if not hasattr(self.bot, '_closure_dm_cache'):
-                self.bot._closure_dm_cache = {}
-            
-            # Check if DM has been sent today
-            if self.bot._closure_dm_cache.get(cache_key):
-                return
-            
-            # Get the user
-            user = self.bot.get_user(int(moderator_id))
-            if not user:
-                # Try fetching the user if not found in cache
-                try:
-                    user = await self.bot.fetch_user(int(moderator_id))
-                except discord.NotFound:
-                    print(f"User not found: {moderator_id}")
-                    return
-                except Exception as fetch_error:
-                    print(f"Error fetching user {moderator_id}: {fetch_error}")
-                    return
-            
-            # Create and send DM
-            embed = discord.Embed(
-                title="📊 Ticket Closure Stats",
-                description=(
-                    f"Congrats on closing your {daily_count} ticket{'s' if daily_count != 1 else ''} of the day! "
-                    f"This is your {monthly_count} ticket{'s' if monthly_count != 1 else ''} of the month."
-                ),
-                color=discord.Color.green()
-            )
-            
-            try:
-                await user.send(embed=embed)
-            except discord.Forbidden:
-                print(f"Cannot send DM to user {moderator_id}: User has DMs disabled")
-                return
-            except discord.HTTPException as http_error:
-                print(f"Failed to send DM to user {moderator_id}: {http_error}")
-                return
-            
-            # Mark DM as sent for today
-            self.bot._closure_dm_cache[cache_key] = True
-        
-        except Exception as e:
-            print(f"Unexpected error in send_closure_dm: {e}")
-
     async def verify_thread_closure(self, thread_id, timeout=300):
         """
         Verify if a thread is actually closed
@@ -779,31 +671,73 @@ class ClaimThread(commands.Cog):
         return False
 
     async def send_thread_notification(self, thread, message):
-        """Send notifications to subscribed users"""
+        """Placeholder for thread notification method"""
+        pass
+
+    @commands.command(name="tickets")
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    async def tickets_command(self, ctx, user: discord.User = None, days: int = 7):
+        """
+        Show ticket statistics for a user
+        
+        :param ctx: Command context
+        :param user: User to check tickets for (defaults to command invoker)
+        :param days: Number of days to look back (default 7)
+        """
         try:
-            # Find thread document
-            thread_doc = await self.ticket_stats_collection.find_one({
-                'guild_id': str(thread.guild.id),
-                'channel_id': str(thread.id)
-            })
-
-            # If no subscriptions, return
-            if not thread_doc or not thread_doc.get('subscriptions'):
-                return
-
-            # Convert subscription IDs to mentions
-            subscriptions = thread_doc.get('subscriptions', [])
+            # Default to command invoker if no user specified
+            if user is None:
+                user = ctx.author
             
-            # Exclude the message author from notifications if they're a subscriber
-            mentions = [f"<@{sub_id}>" for sub_id in subscriptions if sub_id != str(message.author.id)]
+            # Validate days input
+            days = max(1, min(days, 365))  # Limit between 1 and 365 days
             
-            # Create notification message
-            if mentions:
-                notification = " ".join(mentions)
-                await thread.send(f"Notification for: {notification}")
-
+            # Calculate start date
+            start_date = datetime.utcnow() - timedelta(days=days)
+            
+            # Aggregate pipeline to count closed tickets
+            ticket_pipeline = [
+                {
+                    '$match': {
+                        'moderator_id': str(user.id),
+                        'status': 'closed',
+                        'closed_at': {'$gte': start_date}
+                    }
+                },
+                {'$count': 'ticket_count'}
+            ]
+            
+            # Execute aggregation
+            ticket_result = await self.ticket_stats_collection.aggregate(ticket_pipeline).to_list(length=1)
+            
+            # Extract ticket count
+            ticket_count = ticket_result[0]['ticket_count'] if ticket_result else 0
+            
+            # Create embed
+            embed = discord.Embed(
+                title="Ticket Statistics",
+                description=(
+                    f"{user.mention} has {ticket_count} ticket{'s' if ticket_count != 1 else ''} "
+                    f"in the past {days} day{'s' if days != 1 else ''}."
+                ),
+                color=discord.Color.blue()
+            )
+            
+            # Add user avatar
+            embed.set_thumbnail(url=user.display_avatar.url)
+            
+            # Send embed
+            await ctx.send(embed=embed)
+        
         except Exception as e:
-            print(f"Notification send error: {e}")
+            # Error handling
+            error_embed = discord.Embed(
+                title="❌ Error",
+                description=f"Failed to retrieve ticket statistics: {str(e)}",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=error_embed)
+            print(f"Tickets command error: {e}")
 
 async def check_reply(ctx):
     """Check if user can reply to the thread"""
