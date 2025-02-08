@@ -620,6 +620,100 @@ class ClaimThread(commands.Cog):
         # Timeout reached without confirmation
         return False
 
+    @commands.command(name="thread_notify", aliases=["tn", "n"])
+    @commands.check(is_in_thread)
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    async def thread_notify(self, ctx):
+        """Toggle thread notifications"""
+        try:
+            # Ensure thread exists in ticket stats
+            thread_doc = await self.ticket_stats_collection.find_one({
+                'guild_id': str(ctx.guild.id),
+                'channel_id': str(ctx.thread.channel.id)
+            })
+
+            # If no existing document, create one
+            if not thread_doc:
+                await self.ticket_stats_collection.insert_one({
+                    'guild_id': str(ctx.guild.id),
+                    'channel_id': str(ctx.thread.channel.id),
+                    'subscriptions': [str(ctx.author.id)]
+                })
+                
+                embed = discord.Embed(
+                    title="🔔 Thread Notifications",
+                    description=f"{ctx.author.mention} subscribed to thread notifications.",
+                    color=discord.Color.green()
+                )
+                await ctx.send(embed=embed)
+                return
+
+            # Get current subscriptions, default to empty list
+            subscriptions = thread_doc.get('subscriptions', [])
+            
+            # Convert to string to ensure consistent comparison
+            author_id = str(ctx.author.id)
+            
+            # Toggle subscription
+            if author_id in subscriptions:
+                # Unsubscribe
+                subscriptions.remove(author_id)
+                action = "unsubscribed"
+                color = discord.Color.red()
+            else:
+                # Subscribe
+                subscriptions.append(author_id)
+                action = "subscribed"
+                color = discord.Color.green()
+
+            # Update document with new subscriptions
+            await self.ticket_stats_collection.update_one(
+                {
+                    'guild_id': str(ctx.guild.id),
+                    'channel_id': str(ctx.thread.channel.id)
+                },
+                {
+                    '$set': {'subscriptions': subscriptions}
+                }
+            )
+
+            # Send confirmation
+            embed = discord.Embed(
+                title="🔔 Thread Notifications",
+                description=f"{ctx.author.mention} {action} to thread notifications.",
+                color=color
+            )
+            await ctx.send(embed=embed)
+
+        except Exception as e:
+            await ctx.send(f"An error occurred: {e}")
+            print(f"Notify error: {e}")
+
+    async def send_thread_notification(self, thread, message):
+        """Send notifications to subscribed users"""
+        try:
+            # Find thread document
+            thread_doc = await self.ticket_stats_collection.find_one({
+                'guild_id': str(thread.guild.id),
+                'channel_id': str(thread.id)
+            })
+
+            # If no subscriptions, return
+            if not thread_doc or not thread_doc.get('subscriptions'):
+                return
+
+            # Convert subscription IDs to mentions
+            subscriptions = thread_doc.get('subscriptions', [])
+            mentions = [f"<@{sub_id}>" for sub_id in subscriptions]
+            
+            # Create notification message
+            if mentions:
+                notification = " ".join(mentions)
+                await thread.send(f"Notification for: {notification}")
+
+        except Exception as e:
+            print(f"Notification send error: {e}")
+
 async def check_reply(ctx):
     """Check if user can reply to the thread"""
     # Skip check if not a reply command
@@ -707,7 +801,7 @@ async def check_claim(ctx):
             'status': 'claimed'
         })
         
-        # If thread is claimed, check for override
+        # If thread is claimed
         if thread_claim:
             # Check for override permissions
             has_override = False
@@ -717,10 +811,10 @@ async def check_claim(ctx):
                 member_roles = [role.id for role in ctx.author.roles]
                 has_override = any(role_id in member_roles for role_id in override_roles)
             
-            # Allow if user has override
+            # If not an override role, block claim
             if not has_override:
                 cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("This thread is already claimed by another user.")
+                raise commands.CheckFailure("This ticket is already claimed and cannot be reclaimed.")
             
         return True
         
