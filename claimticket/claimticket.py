@@ -939,23 +939,26 @@ async def check_reply(ctx):
     reply_commands = ['reply', 'areply', 'freply', 'fareply', 'r', 'ar', 'fr', 'far']
     if ctx.command.name not in reply_commands:
         return True
-    
-    # Skip check if no thread attribute
-    if not hasattr(ctx, 'thread'):
-        return True
 
     try:
         cog = ctx.bot.get_cog('ClaimThread')
         channel_id = str(ctx.thread.channel.id)
         
-        # Check message cache to prevent spam
+        # Modify spam prevention to be less restrictive
         current_time = time.time()
+        
+        # If channel exists in cache, check cooldown
         if channel_id in cog.check_message_cache:
             last_time = cog.check_message_cache[channel_id]
-            if current_time - last_time < 5:  # 5 second cooldown
-                cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("Spam prevention: Please wait before trying again.")
-                
+            # Reduce cooldown to 2 seconds and only for the same user
+            if (current_time - last_time < 2 and 
+                cog.check_message_cache.get(f"{channel_id}_user") == str(ctx.author.id)):
+                raise commands.CheckFailure("Please wait a moment before sending another message.")
+        
+        # Update cache with current time and user
+        cog.check_message_cache[channel_id] = current_time
+        cog.check_message_cache[f"{channel_id}_user"] = str(ctx.author.id)
+        
         # Check if thread is claimed
         thread_claim = await cog.ticket_stats_collection.find_one({
             'guild_id': str(ctx.guild.id),
@@ -984,7 +987,6 @@ async def check_reply(ctx):
             )
             
             if not can_reply:
-                cog.check_message_cache[channel_id] = current_time
                 raise commands.CheckFailure("This ticket has been claimed by another moderator. You cannot reply.")
             
         return True
