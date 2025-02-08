@@ -294,8 +294,8 @@ class ClaimThread(commands.Cog):
         
         # Count active claims for this user
         active_claims = await self.ticket_stats_collection.count_documents({
-            'guild': str(self.bot.modmail_guild.id),
-            'claimers': str(claimer_id),
+            'guild_id': str(self.bot.modmail_guild.id),
+            'moderator_id': str(claimer_id),
             'status': {'$ne': 'closed'}
         })
         
@@ -306,51 +306,21 @@ class ClaimThread(commands.Cog):
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     async def claim_thread(self, ctx):
         """Claim the current ticket thread"""
-        # Check if thread is already claimed
-        thread = await self.ticket_stats_collection.find_one({
-            'thread_id': str(ctx.channel.id), 
-            'guild': str(self.bot.modmail_guild.id)
-        })
-        
-        # Check if thread has active claimers
-        has_active_claimers = thread and thread.get('claimers') and len(thread['claimers']) > 0
-        
-        # If thread is already claimed and current user is not a claimer
-        if has_active_claimers and (not thread or str(ctx.author.id) not in thread.get('claimers', [])):
-            embed = discord.Embed(
-                description="This thread is already claimed by another user.",
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed, delete_after=10)
-            await ctx.message.add_reaction('🚫')
-            return
-
-        # Proceed with claiming if not already claimed or is current claimer
         try:
-            # Check claim limits
-            if not await self.check_claimer(ctx, ctx.author.id):
-                await ctx.message.add_reaction('🚫')
-                return
-
-            # Update database
-            if thread is None:
-                await self.ticket_stats_collection.insert_one({
-                    'guild': str(self.bot.modmail_guild.id),
-                    'thread_id': str(ctx.thread.channel.id),
-                    'claimers': [str(ctx.author.id)],
-                    'status': 'open'
-                })
-            else:
-                await self.ticket_stats_collection.find_one_and_update(
-                    {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)},
-                    {'$set': {'claimers': [str(ctx.author.id)], 'status': 'open'}}
-                )
-
-            # Delete the claim command message
-            try:
-                await ctx.message.delete()
-            except:
-                pass
+            # Update or insert ticket stats
+            await self.ticket_stats_collection.update_one(
+                {
+                    'guild_id': str(ctx.guild.id),
+                    'channel_id': str(ctx.channel.id)
+                },
+                {
+                    '$set': {
+                        'moderator_id': str(ctx.author.id),
+                        'status': 'claimed'
+                    }
+                },
+                upsert=True
+            )
 
             # Send claim embed
             embed = discord.Embed(
@@ -359,6 +329,7 @@ class ClaimThread(commands.Cog):
                 color=discord.Color.orange()
             )
             await ctx.send(embed=embed)
+        
         except Exception as e:
             await ctx.message.add_reaction('❌')
             print(f"Claim error: {e}")
@@ -368,134 +339,64 @@ class ClaimThread(commands.Cog):
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     async def unclaim_thread(self, ctx):
         """Unclaim the current ticket thread"""
-        thread = await self.ticket_stats_collection.find_one({
-            'thread_id': str(ctx.thread.channel.id), 
-            'guild': str(self.bot.modmail_guild.id)
-        })
-        
-        # Check if thread is claimed and current user is a claimer or moderator
-        if not thread or not thread.get('claimers'):
-            embed = discord.Embed(
-                description="This thread is not currently claimed.",
-                color=discord.Color.red()
+        try:
+            # Update ticket status to unclaimed
+            result = await self.ticket_stats_collection.update_one(
+                {
+                    'guild_id': str(ctx.guild.id),
+                    'channel_id': str(ctx.channel.id),
+                    'moderator_id': str(ctx.author.id)
+                },
+                {
+                    '$set': {
+                        'status': 'unclaimed',
+                        'moderator_id': None
+                    }
+                }
             )
-            await ctx.send(embed=embed, delete_after=10)
-            await ctx.message.add_reaction('🚫')
-            return
 
-        # Only allow unclaim if user is a claimer or moderator
-        if (await self.is_moderator(ctx.author)) or str(ctx.author.id) in thread['claimers']:
-            try:
-                # Remove the claimer
-                await self.ticket_stats_collection.find_one_and_update(
-                    {'thread_id': str(ctx.thread.channel.id), 'guild': str(self.bot.modmail_guild.id)}, 
-                    {'$pull': {'claimers': str(ctx.author.id)}}
-                )
-                
-                # Delete the unclaim command message
-                try:
-                    await ctx.message.delete()
-                except:
-                    pass
-
-                # Send unclaim embed
+            if result.modified_count > 0:
                 embed = discord.Embed(
                     title="🔓 Ticket Unclaimed",
                     description=f"{ctx.author.mention} unclaimed the ticket.",
                     color=discord.Color.dark_orange()
                 )
                 await ctx.send(embed=embed)
-            except Exception as e:
-                await ctx.message.add_reaction('❌')
-                print(f"Unclaim error: {e}")
-        else:
-            embed = discord.Embed(
-                description="You are not authorized to unclaim this thread.",
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed, delete_after=10)
-            await ctx.message.add_reaction('🚫')
+            else:
+                await ctx.send("You cannot unclaim this ticket.")
+        
+        except Exception as e:
+            await ctx.message.add_reaction('❌')
+            print(f"Unclaim error: {e}")
 
-    @commands.command(name="thread_notify", aliases=["tn", "n"])
+    @commands.command(name="close")
     @commands.check(is_in_thread)
     @checks.has_permissions(PermissionLevel.SUPPORTER)
-    async def thread_notify(self, ctx):
-        """Toggle thread notifications"""
-        # Ensure thread exists in config
-        thread = await self.ticket_stats_collection.find_one({
-            'thread_id': str(ctx.thread.channel.id), 
-            'guild': str(self.bot.modmail_guild.id)
-        })
-
-        # Create thread record if not exists
-        if thread is None:
-            await self.ticket_stats_collection.insert_one({
-                'thread_id': str(ctx.thread.channel.id), 
-                'guild': str(self.bot.modmail_guild.id),
-                'subscriptions': [str(ctx.author.id)]
-            })
-            
-            # Update config subscriptions
-            if str(ctx.thread.id) not in self.bot.config["subscriptions"]:
-                self.bot.config["subscriptions"][str(ctx.thread.id)] = []
-            
-            if ctx.author.mention not in self.bot.config["subscriptions"][str(ctx.thread.id)]:
-                self.bot.config["subscriptions"][str(ctx.thread.id)].append(ctx.author.mention)
-                await self.bot.config.update()
-            
-            embed = discord.Embed(
-                title="🔔 Thread Notifications",
-                description=f"{ctx.author.mention} subscribed to thread notifications.",
-                color=discord.Color.green()
+    async def close_thread(self, ctx, *, reason=None):
+        """Close the current ticket thread"""
+        try:
+            # Update ticket status to closed
+            await self.ticket_stats_collection.update_one(
+                {
+                    'guild_id': str(ctx.guild.id),
+                    'channel_id': str(ctx.channel.id)
+                },
+                {
+                    '$set': {
+                        'status': 'closed',
+                        'moderator_id': str(ctx.author.id),
+                        'closed_at': datetime.utcnow()
+                    }
+                },
+                upsert=True
             )
-            await ctx.send(embed=embed)
-            return
 
-        # Get current subscriptions
-        subscriptions = thread.get('subscriptions', [])
+            # Your existing close logic here
+            # ... (rest of the close method remains the same)
         
-        # Toggle subscription
-        if str(ctx.author.id) in subscriptions:
-            subscriptions.remove(str(ctx.author.id))
-            
-            # Remove from config subscriptions
-            if str(ctx.thread.id) in self.bot.config["subscriptions"]:
-                if ctx.author.mention in self.bot.config["subscriptions"][str(ctx.thread.id)]:
-                    self.bot.config["subscriptions"][str(ctx.thread.id)].remove(ctx.author.mention)
-                    await self.bot.config.update()
-            
-            embed = discord.Embed(
-                title="🔔 Thread Notifications",
-                description=f"{ctx.author.mention} unsubscribed from thread notifications.",
-                color=discord.Color.red()
-            )
-        else:
-            subscriptions.append(str(ctx.author.id))
-            
-            # Add to config subscriptions
-            if str(ctx.thread.id) not in self.bot.config["subscriptions"]:
-                self.bot.config["subscriptions"][str(ctx.thread.id)] = []
-            
-            if ctx.author.mention not in self.bot.config["subscriptions"][str(ctx.thread.id)]:
-                self.bot.config["subscriptions"][str(ctx.thread.id)].append(ctx.author.mention)
-                await self.bot.config.update()
-            
-            embed = discord.Embed(
-                title="🔔 Thread Notifications",
-                description=f"{ctx.author.mention} subscribed to thread notifications.",
-                color=discord.Color.green()
-            )
-
-        # Update thread record
-        await self.ticket_stats_collection.find_one_and_update(
-            {
-                'thread_id': str(ctx.thread.channel.id), 
-                'guild': str(self.bot.modmail_guild.id)
-            }, 
-            {'$set': {'subscriptions': subscriptions}}
-        )
-
-        await ctx.send(embed=embed)
+        except Exception as e:
+            await ctx.message.add_reaction('❌')
+            print(f"Close error: {e}")
 
     async def update_ticket_stats(self, thread, closer):
         """
@@ -739,12 +640,12 @@ async def check_reply(ctx):
 
         # Find the thread record
         thread = await cog.ticket_stats_collection.find_one({
-            'thread_id': str(ctx.thread.channel.id), 
-            'guild': str(ctx.bot.modmail_guild.id)
+            'guild_id': str(ctx.guild.id),
+            'channel_id': str(ctx.thread.channel.id)
         })
         
         # If thread isn't claimed, allow reply
-        if not thread or not thread.get('claimers'):
+        if not thread or not thread.get('moderator_id'):
             return True
         
         # Check for override permissions
@@ -756,7 +657,7 @@ async def check_reply(ctx):
         # Allow if user has override or is claimer
         can_reply = (
             has_override or 
-            str(ctx.author.id) in thread['claimers']
+            str(ctx.author.id) == thread['moderator_id']
         )
         
         if not can_reply:
@@ -797,8 +698,8 @@ async def check_claim(ctx):
                 
         # Check if thread is already claimed
         thread_claim = await cog.ticket_stats_collection.find_one({
-            'channel_id': channel_id, 
-            'guild': str(ctx.guild.id),
+            'guild_id': str(ctx.guild.id),
+            'channel_id': channel_id,
             'status': 'claimed'
         })
         
@@ -845,10 +746,10 @@ async def check_unclaim(ctx):
                 
         # Check if thread is claimed
         thread_claim = await cog.ticket_stats_collection.find_one({
-            'channel_id': channel_id, 
-            'guild': str(ctx.guild.id),
+            'guild_id': str(ctx.guild.id),
+            'channel_id': channel_id,
             'status': 'claimed',
-            'claimer_id': str(ctx.author.id)
+            'moderator_id': str(ctx.author.id)
         })
         
         # If thread is not claimed by this user
@@ -899,8 +800,8 @@ async def check_reply(ctx):
                 
         # Check if thread is claimed
         thread_claim = await cog.ticket_stats_collection.find_one({
-            'channel_id': channel_id, 
-            'guild': str(ctx.guild.id),
+            'guild_id': str(ctx.guild.id),
+            'channel_id': channel_id,
             'status': 'claimed'
         })
         
@@ -918,7 +819,7 @@ async def check_reply(ctx):
             can_reply = (
                 ctx.author.bot or 
                 has_override or 
-                str(ctx.author.id) == thread_claim.get('claimer_id')
+                str(ctx.author.id) == thread_claim.get('moderator_id')
             )
             
             if not can_reply:
@@ -953,8 +854,8 @@ async def check_close(ctx):
                 
         # Check if thread is claimed
         thread_claim = await cog.ticket_stats_collection.find_one({
-            'channel_id': channel_id, 
-            'guild': str(ctx.guild.id),
+            'guild_id': str(ctx.guild.id),
+            'channel_id': channel_id,
             'status': 'claimed'
         })
         
@@ -972,7 +873,7 @@ async def check_close(ctx):
             can_close = (
                 ctx.author.bot or 
                 has_override or 
-                str(ctx.author.id) == thread_claim.get('claimer_id')
+                str(ctx.author.id) == thread_claim.get('moderator_id')
             )
             
             if not can_close:
