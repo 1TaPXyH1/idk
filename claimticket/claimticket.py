@@ -596,7 +596,7 @@ async def check_reply(ctx):
                     await ctx.message.add_reaction('❌')
                 except:
                     pass
-                return False
+                raise commands.CheckFailure("Spam prevention: Please wait before trying again.")
                 
         thread = await cog.db.find_one({
             'thread_id': str(ctx.thread.channel.id), 
@@ -622,21 +622,14 @@ async def check_reply(ctx):
         )
         
         if not can_reply:
-            # Update cache, send ephemeral message and add X reaction
+            # Update cache
             cog.check_message_cache[channel_id] = current_time
-            try:
-                embed = discord.Embed(
-                    description="This thread has been claimed by another user.",
-                    color=discord.Color.red()
-                )
-                await ctx.send(embed=embed, ephemeral=True)
-                await ctx.message.add_reaction('❌')
-            except:
-                pass
-            return False
+            raise commands.CheckFailure("This thread has been claimed by another user. You cannot reply.")
             
         return True
         
+    except commands.CheckFailure:
+        raise
     except Exception as e:
         print(f"Error in check_reply: {e}")
         return True
@@ -661,7 +654,7 @@ async def check_close(ctx):
                     await ctx.message.add_reaction('❌')
                 except:
                     pass
-                return False
+                raise commands.CheckFailure("Spam prevention: Please wait before trying again.")
                 
         thread = await cog.db.find_one({
             'thread_id': str(ctx.thread.channel.id), 
@@ -687,21 +680,14 @@ async def check_close(ctx):
         )
         
         if not can_close:
-            # Update cache, send ephemeral message and add X reaction
+            # Update cache
             cog.check_message_cache[channel_id] = current_time
-            try:
-                embed = discord.Embed(
-                    description="This thread has been claimed by another user. Only claimers can close it.",
-                    color=discord.Color.red()
-                )
-                await ctx.send(embed=embed, ephemeral=True)
-                await ctx.message.add_reaction('❌')
-            except:
-                pass
-            return False
+            raise commands.CheckFailure("This thread has been claimed by another user. Only claimers can close it.")
             
         return True
         
+    except commands.CheckFailure:
+        raise
     except Exception as e:
         print(f"Error in check_close: {e}")
         return True
