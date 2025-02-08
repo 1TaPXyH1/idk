@@ -189,7 +189,7 @@ class ClaimThread(commands.Cog):
                     cmd.add_check(check_claim)
                 elif cmd_name == 'unclaim':
                     cmd.add_check(check_unclaim)
-                elif cmd_name in ['reply', 'areply', 'freply', 'fareply']:
+                elif cmd_name in ['reply', 'areply', 'freply', 'fareply', 'r', 'ar', 'fr', 'far']:
                     cmd.add_check(check_reply)
                 elif cmd_name == 'ticket_close':
                     cmd.add_check(check_close)
@@ -936,7 +936,7 @@ class ClaimThread(commands.Cog):
 async def check_reply(ctx):
     """Check if user can reply to the thread"""
     # Skip check if not a reply command
-    reply_commands = ['reply', 'areply', 'freply', 'fareply']
+    reply_commands = ['reply', 'areply', 'freply', 'fareply', 'r', 'ar', 'fr', 'far']
     if ctx.command.name not in reply_commands:
         return True
     
