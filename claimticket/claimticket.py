@@ -33,9 +33,12 @@ class ClaimThread(commands.Cog):
         self.reset_times = {}
         
         # Add checks for main commands only
-        for cmd_name in ['reply', 'areply', 'freply', 'fareply']:
+        for cmd_name in ['reply', 'areply', 'freply', 'fareply', 'close']:
             if cmd := self.bot.get_command(cmd_name):
-                cmd.add_check(check_reply)
+                if cmd_name in ['reply', 'areply', 'freply', 'fareply']:
+                    cmd.add_check(check_reply)
+                elif cmd_name == 'close':
+                    cmd.add_check(check_close)
 
         # Add default config with fixed cooldowns
         self.default_config = {
@@ -636,6 +639,71 @@ async def check_reply(ctx):
         
     except Exception as e:
         print(f"Error in check_reply: {e}")
+        return True
+
+
+async def check_close(ctx):
+    """Check if user can close the thread"""
+    # Skip check if no thread attribute
+    if not hasattr(ctx, 'thread'):
+        return True
+
+    try:
+        cog = ctx.bot.get_cog('ClaimThread')
+        channel_id = str(ctx.channel.id)
+        
+        # Check message cache to prevent spam
+        current_time = time.time()
+        if channel_id in cog.check_message_cache:
+            last_time = cog.check_message_cache[channel_id]
+            if current_time - last_time < 5:  # 5 second cooldown
+                try:
+                    await ctx.message.add_reaction('❌')
+                except:
+                    pass
+                return False
+                
+        thread = await cog.db.find_one({
+            'thread_id': str(ctx.thread.channel.id), 
+            'guild': str(ctx.bot.modmail_guild.id)
+        })
+        
+        # If thread isn't claimed or doesn't exist, allow close
+        if not thread or not thread.get('claimers'):
+            return True
+            
+        # Check for override permissions
+        has_override = False
+        if config := await cog.db.find_one({'_id': 'config'}):
+            override_roles = config.get('override_roles', [])
+            member_roles = [role.id for role in ctx.author.roles]
+            has_override = any(role_id in member_roles for role_id in override_roles)
+        
+        # Allow if user is bot, has override, or is claimer
+        can_close = (
+            ctx.author.bot or 
+            has_override or 
+            str(ctx.author.id) in thread['claimers']
+        )
+        
+        if not can_close:
+            # Update cache, send ephemeral message and add X reaction
+            cog.check_message_cache[channel_id] = current_time
+            try:
+                embed = discord.Embed(
+                    description="This thread has been claimed by another user. Only claimers can close it.",
+                    color=discord.Color.red()
+                )
+                await ctx.send(embed=embed, ephemeral=True)
+                await ctx.message.add_reaction('❌')
+            except:
+                pass
+            return False
+            
+        return True
+        
+    except Exception as e:
+        print(f"Error in check_close: {e}")
         return True
 
 
