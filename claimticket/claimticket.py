@@ -193,7 +193,7 @@ class ClaimThread(commands.Cog):
             try:
                 # Find all active tickets, using only channel_id
                 active_tickets = await self.ticket_stats_collection.find({
-                    'current_state': {'$ne': 'closed'}
+                    'status': {'$ne': 'closed'}
                 }).to_list(length=None)
                 
                 for ticket in active_tickets:
@@ -383,7 +383,7 @@ class ClaimThread(commands.Cog):
                 },
                 {
                     '$set': {
-                        'status': 'closed',
+                        'status': 'closed',  
                         'moderator_id': str(ctx.author.id),
                         'closed_at': datetime.utcnow()
                     }
@@ -444,7 +444,7 @@ class ClaimThread(commands.Cog):
                 'guild_id': guild_id,
                 'created_at': thread.created_at,
                 'moderator_id': str(closer.id) if closer else None,
-                'current_state': 'closed' if is_closed else 'open',
+                'status': 'closed' if is_closed else 'open',
                 'closed_at': datetime.utcnow() if is_closed else None
             }
             
@@ -515,7 +515,7 @@ class ClaimThread(commands.Cog):
             stats_doc = {
                 'channel_id': str(thread.id) if thread else 'unknown',
                 'guild_id': str(thread.guild.id) if thread and thread.guild else 'unknown',
-                'current_state': state,
+                'status': state,
             }
             
             # Preserve existing moderator_id if it exists
@@ -561,14 +561,14 @@ class ClaimThread(commands.Cog):
         # Count daily closed tickets
         daily_tickets = await self.ticket_stats_collection.count_documents({
             'moderator_id': str_moderator_id,
-            'current_state': 'closed',
+            'status': 'closed',
             'closed_at': {'$gte': today_start}
         })
         
         # Count monthly closed tickets
         monthly_tickets = await self.ticket_stats_collection.count_documents({
             'moderator_id': str_moderator_id,
-            'current_state': 'closed',
+            'status': 'closed',
             'closed_at': {'$gte': month_start}
         })
         
@@ -633,47 +633,51 @@ async def check_reply(ctx):
 
     try:
         cog = ctx.bot.get_cog('ClaimThread')
+        channel_id = str(ctx.thread.channel.id)
         
-        # Check if user is a moderator (full bypass)
-        if await cog.is_moderator(ctx.author):
-            return True
-
-        # Find the thread record
-        thread = await cog.ticket_stats_collection.find_one({
+        # Check message cache to prevent spam
+        current_time = time.time()
+        if channel_id in cog.check_message_cache:
+            last_time = cog.check_message_cache[channel_id]
+            if current_time - last_time < 5:  # 5 second cooldown
+                cog.check_message_cache[channel_id] = current_time
+                raise commands.CheckFailure("Spam prevention: Please wait before trying again.")
+                
+        # Check if thread is claimed
+        thread_claim = await cog.ticket_stats_collection.find_one({
             'guild_id': str(ctx.guild.id),
-            'channel_id': str(ctx.thread.channel.id)
+            'channel_id': channel_id,
+            'status': 'claimed'
         })
         
-        # If thread isn't claimed, allow reply
-        if not thread or not thread.get('moderator_id'):
-            return True
-        
-        # Check for override permissions
-        config = await cog.get_config()
-        override_roles = config.get('override_roles', [])
-        member_roles = [role.id for role in ctx.author.roles]
-        has_override = any(role_id in member_roles for role_id in override_roles)
-        
-        # Allow if user has override or is claimer
-        can_reply = (
-            has_override or 
-            str(ctx.author.id) == thread['moderator_id']
-        )
-        
-        if not can_reply:
-            try:
-                embed = discord.Embed(
-                    description="This thread has been claimed by another user.",
-                    color=discord.Color.red()
-                )
-                await ctx.send(embed=embed, ephemeral=True)
-                await ctx.message.add_reaction('❌')
-            except:
-                pass
-            return False
+        # If thread is claimed
+        if thread_claim:
+            # Check for override permissions
+            has_override = False
+            config = await cog.config_collection.find_one({'_id': 'config'})
+            if config:
+                override_roles = config.get('override_roles', [])
+                member_roles = [role.id for role in ctx.author.roles]
+                has_override = any(role_id in member_roles for role_id in override_roles)
+            
+            # Allow reply if:
+            # 1. User is the moderator who claimed the ticket
+            # 2. User has override roles
+            # 3. User is a bot
+            can_reply = (
+                ctx.author.bot or 
+                str(ctx.author.id) == thread_claim.get('moderator_id') or 
+                has_override
+            )
+            
+            if not can_reply:
+                cog.check_message_cache[channel_id] = current_time
+                raise commands.CheckFailure("This ticket has been claimed by another moderator. You cannot reply.")
             
         return True
         
+    except commands.CheckFailure:
+        raise
     except Exception as e:
         print(f"Error in check_reply: {e}")
         return True
@@ -748,60 +752,6 @@ async def check_unclaim(ctx):
         thread_claim = await cog.ticket_stats_collection.find_one({
             'guild_id': str(ctx.guild.id),
             'channel_id': channel_id,
-            'status': 'claimed',
-            'moderator_id': str(ctx.author.id)
-        })
-        
-        # If thread is not claimed by this user
-        if not thread_claim:
-            # Check for override permissions
-            has_override = False
-            config = await cog.config_collection.find_one({'_id': 'config'})
-            if config:
-                override_roles = config.get('override_roles', [])
-                member_roles = [role.id for role in ctx.author.roles]
-                has_override = any(role_id in member_roles for role_id in override_roles)
-            
-            # Allow if user has override
-            if not has_override:
-                cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("You cannot unclaim a thread you did not claim.")
-            
-        return True
-        
-    except commands.CheckFailure:
-        raise
-    except Exception as e:
-        print(f"Error in check_unclaim: {e}")
-        return True
-
-async def check_reply(ctx):
-    """Check if user can reply to the thread"""
-    # Skip check if not a reply command
-    reply_commands = ['reply', 'areply', 'freply', 'fareply']
-    if ctx.command.name not in reply_commands:
-        return True
-    
-    # Skip check if no thread attribute
-    if not hasattr(ctx, 'thread'):
-        return True
-
-    try:
-        cog = ctx.bot.get_cog('ClaimThread')
-        channel_id = str(ctx.thread.channel.id)
-        
-        # Check message cache to prevent spam
-        current_time = time.time()
-        if channel_id in cog.check_message_cache:
-            last_time = cog.check_message_cache[channel_id]
-            if current_time - last_time < 5:  # 5 second cooldown
-                cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("Spam prevention: Please wait before trying again.")
-                
-        # Check if thread is claimed
-        thread_claim = await cog.ticket_stats_collection.find_one({
-            'guild_id': str(ctx.guild.id),
-            'channel_id': channel_id,
             'status': 'claimed'
         })
         
@@ -815,23 +765,24 @@ async def check_reply(ctx):
                 member_roles = [role.id for role in ctx.author.roles]
                 has_override = any(role_id in member_roles for role_id in override_roles)
             
-            # Allow if user is bot, has override, or is claimer
-            can_reply = (
-                ctx.author.bot or 
-                has_override or 
-                str(ctx.author.id) == thread_claim.get('moderator_id')
+            # Only allow unclaim if:
+            # 1. User is the moderator who claimed the ticket
+            # 2. User has override roles
+            can_unclaim = (
+                str(ctx.author.id) == thread_claim.get('moderator_id') or 
+                has_override
             )
             
-            if not can_reply:
+            if not can_unclaim:
                 cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("This thread has been claimed by another user. You cannot reply.")
+                raise commands.CheckFailure("You cannot unclaim a ticket claimed by another moderator.")
             
         return True
         
     except commands.CheckFailure:
         raise
     except Exception as e:
-        print(f"Error in check_reply: {e}")
+        print(f"Error in check_unclaim: {e}")
         return True
 
 async def check_close(ctx):
@@ -869,16 +820,19 @@ async def check_close(ctx):
                 member_roles = [role.id for role in ctx.author.roles]
                 has_override = any(role_id in member_roles for role_id in override_roles)
             
-            # Allow if user is bot, has override, or is claimer
+            # Allow close if:
+            # 1. User is the moderator who claimed the ticket
+            # 2. User has override roles
+            # 3. User is a bot
             can_close = (
                 ctx.author.bot or 
-                has_override or 
-                str(ctx.author.id) == thread_claim.get('moderator_id')
+                str(ctx.author.id) == thread_claim.get('moderator_id') or 
+                has_override
             )
             
             if not can_close:
                 cog.check_message_cache[channel_id] = current_time
-                raise commands.CheckFailure("This thread has been claimed by another user. Only claimers can close it.")
+                raise commands.CheckFailure("This ticket has been claimed by another moderator. Only the claiming moderator can close it.")
             
         return True
         
